@@ -10,4 +10,4 @@
 | [`memory-markdown/`](memory-markdown/README.md) | 以可编辑 markdown 文件实现记忆，并用 SQLite 关键词检索建立索引 | `ctx.memory` |
 | [`tool-memory/`](tool-memory/README.md) | 公开 `memory_search`/`memory_get`/`memory_set` 工具，并在会话开始注入最高分块 | 注册到 `ctx.tools` |
 
-设计与验收标准见提案笔记 [cross-session-memory](../../.agents/notes/proposed/feature/2026-08-16-cross-session-memory.md)。
+设计与验收标准见笔记 [cross-session-memory](../../.agents/notes/implemented/feature/2026-08-16-cross-session-memory.md)。
