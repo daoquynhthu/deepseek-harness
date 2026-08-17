@@ -2,7 +2,7 @@
 
 [English](memory.md) | 中文
 
-跨会话精炼记忆能力是一项[能力 seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md)：它持久保存智能体选择跨会话记住的知识，并通过混合召回将其重新呈现。该能力拆分到多个包：Service Definition（[dsh-memory](../../packages/memory/memory)，`ctx.memory`）、Service Provider（[dsh-memory-markdown](../../packages/memory/memory-markdown)，宿主主目录下的 markdown 文件配合 SQLite FTS5 索引）和 Consumer（[dsh-tool-memory](../../packages/memory/tool-memory)，`memory_search`/`memory_get`/`memory_set` 工具与会话开始注入）。记忆是**一项可选能力**，不属于 agent loop（智能体循环）主干，因此其词汇记录在此处，而不在 [core.md](core.md) 中。
+跨会话精炼记忆能力是一项[能力 seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md)：它持久保存智能体选择跨会话记住的知识，并通过关键词召回将其重新呈现。该能力拆分到多个包：Service Definition（[dsh-memory](../../packages/memory/memory)，`ctx.memory`）、Service Provider（[dsh-memory-markdown](../../packages/memory/memory-markdown)，宿主主目录下的 markdown 文件配合 SQLite FTS5 索引）和 Consumer（[dsh-tool-memory](../../packages/memory/tool-memory)，`memory_search`/`memory_get`/`memory_set` 工具与会话开始注入）。记忆是**一项可选能力**，不属于 agent loop（智能体循环）主干，因此其词汇记录在此处，而不在 [core.md](core.md) 中。
 
 源码：[`packages/memory/memory/src/index.ts`](../../packages/memory/memory/src/index.ts)
 
@@ -22,7 +22,7 @@ type MemoryPath = Branded<'MemoryPath'>
 
 ## 分块与索引
 
-文件被拆分为尊重 markdown 结构（标题、段落和代码块）的分块，每个分块携带活动标题栈作为上下文以保证自包含。确定性内容哈希使分块在未更改文本的重新索引中保持稳定；分块记录其在源文件中的从 0 开始的起止行。provider 将分块存储在专用 SQLite 索引中，其 schema 版本和应用 id 防止无关数据库误用；分块文本以 contentless FTS5 表建立索引。向量检索是可选开启的，在仅 FTS 操作中从不导入，因此未配置 embedding provider 的部署执行零 LLM 或 embedding 调用。
+文件被拆分为尊重 markdown 结构（标题、段落和代码块）的分块，每个分块携带活动标题栈作为上下文以保证自包含。确定性内容哈希使分块在未更改文本的重新索引中保持稳定；分块记录其在源文件中的从 0 开始的起止行。provider 将分块存储在专用 SQLite 索引中，其 schema 版本和应用 id 防止无关数据库误用；分块文本以 contentless FTS5 表建立索引。现装召回路径仅 FTS，从不导入向量扩展，因此部署执行零 LLM 或 embedding 调用；向量检索是后续工作。
 
 ```ts type-equiv
 /** One indexed chunk of a memory file. */
@@ -90,7 +90,7 @@ Search, read, write, and list are backend-independent concrete contracts; a back
 
 ```ts cordis-catalog
 /**
- * Search curated memory with the configured hybrid pipeline.
+ * Search curated memory with the FTS keyword pipeline.
  * @param request - query, optional scope/limit/min-score overrides, cancellation.
  * @returns ranked results with per-result mode and coverage metadata.
  */
@@ -133,5 +133,5 @@ abstract readChunks(path: MemoryPath): Promise<readonly MemoryChunk[]>
 abstract inject(request: MemoryInjectRequest): Promise<readonly MemoryChunk[]>
 ```
 
-Source: [`packages/memory/memory/src/index.ts:56`](../../packages/memory/memory/src/index.ts)
+Source: [`packages/memory/memory/src/index.ts:55`](../../packages/memory/memory/src/index.ts)
 <!-- END GENERATED cordis-surface -->

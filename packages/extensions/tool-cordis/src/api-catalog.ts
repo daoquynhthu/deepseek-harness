@@ -893,7 +893,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'abstract search(request: MemorySearchRequest): Promise<MemorySearchPage>',
-        description: 'Search curated memory with the configured hybrid pipeline.',
+        description: 'Search curated memory with the FTS keyword pipeline.',
         parameters: [{ name: 'request', description: 'query, optional scope/limit/min-score overrides, cancellation.' }],
         returns: 'ranked results with per-result mode and coverage metadata.',
       },
@@ -3436,7 +3436,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'MemorySearchConfig',
-    declaration: 'export interface MemorySearchConfig {\n    readonly maxResults: number;\n    readonly minScore: number;\n    readonly textWeight: number;\n    readonly vectorWeight: number;\n    readonly mmrEnabled: boolean;\n    readonly temporalDecay: TemporalDecayConfig;\n    readonly sourceWeights: Readonly<Record<MemoryScope, number>>;\n}',
+    declaration: 'export interface MemorySearchConfig {\n    readonly maxResults: number;\n    readonly minScore: number;\n    readonly temporalDecay: TemporalDecayConfig;\n    readonly sourceWeights: Readonly<Record<MemoryScope, number>>;\n}',
   },
   {
     name: 'MemorySearchPage',

@@ -12,7 +12,7 @@
 
 | 成员 | 语义 |
 |---|---|
-| `search(request)` | 运行配置的混合检索管线，并返回带每条结果的召回模式与覆盖元数据的有序结果。可选的 `scope`、`limit` 与 `minScore` 覆盖服务配置；`signal` 取消。 |
+| `search(request)` | 运行 FTS 关键词检索管线，并返回带每条结果的召回模式与覆盖元数据的有序结果。可选的 `scope`、`limit` 与 `minScore` 覆盖服务配置；`signal` 取消。 |
 | `read(path)` | 返回一个记忆文件的当前内容。文件不存在时以 `MEMORY_FILE_NOT_FOUND` 拒绝。 |
 | `write(path, content)` | 原子地替换一个记忆文件的内容。 |
 | `list()` | 返回已知记忆文件及其大小与修改元数据，按确定性顺序排列。 |
@@ -37,9 +37,6 @@
 |---|---|---|
 | `maxResults` | `10` | 单次检索返回的最大结果数。 |
 | `minScore` | `0.1` | 最低接受分数；更低分块被丢弃。 |
-| `textWeight` | `1` | 合并分数中的 FTS 关键词权重。 |
-| `vectorWeight` | `1` | 合并分数中的向量相似度权重；仅在仅 FTS 模式下不使用。 |
-| `mmrEnabled` | `false` | 启用时应用 MMR 多样性重排。 |
 | `temporalDecayEnabled` | `true` | 启用时对 `session` 分块应用指数衰减。 |
 | `halfLifeDays` | `30` | 半衰期（天）；`lambda = ln(2) / halfLifeDays`。 |
 | `sourceWeights` | `{ global: 1, workspace: 1, session: 1 }` | 各作用域分数权重。 |
@@ -77,5 +74,5 @@
 
 ## Known Limitations and Deferred Work
 
-- **服务是后端无关的，但现装后端默认仅 FTS**——`dsh-memory-markdown` 中的混合向量召回是可选开启的，且需要 embedding provider；没有它时，每次检索都是 `fts-only`，零 LLM 或 embedding 调用。
+- **现装后端仅 FTS**——向量召回与混合评分是后续工作；每次检索都是 `fts-only`，零 LLM 或 embedding 调用。向量路径见跨会话记忆 Agent Note 的后续工作。
 - **无整合或遗忘**——记忆通过显式的 `memory_set` 写入与检索驱动的访问次数来策展；没有后台 "dream" 整理、文件监视器或从会话归档的自动提升。

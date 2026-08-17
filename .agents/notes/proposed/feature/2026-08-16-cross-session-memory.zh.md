@@ -33,13 +33,15 @@ Grok 的记忆系统（`xai-grok-memory`）是成熟参照：`~/.grok/memory/` �
 
 ### 索引与混合搜索
 
-`index.sqlite` 含 `chunks` 表（path、起止行、text、hash、source、访问次数、时间戳）、contentless FTS5 虚拟表（BM25 关键词搜索），以及——配置了 embedding provider 时——`vec0` 虚拟表（KNN）。搜索流水线是 grok 的：FTS 关键词搜索始终可用；有嵌入时合并向量 KNN；分数归一化到 `[0,1]`；过滤内容空 chunk（空的或 scaffold 模板 `MEMORY.md` stub）；仅对会话 chunk 施加时间衰减；加源权重与访问频次提升；可选 MMR 多样性重排；按 `maxResults` 封顶。优雅降级是承重设计：无 embedding provider 时模式为 FTS-only，`textWeight = 1.0`，召回路径永不依赖 LLM 或 embedding 调用，保持 keyless 回放确定性（与 `recallable-compaction` 排除语义召回是同一约束）。
+`index.sqlite` 含 `chunks` 表（相对品牌 path、起止行、text、hash、source、访问次数、时间戳）与 contentless FTS5 虚拟表（BM25 关键词搜索）。搜索流水线沿用 grok 的关键词侧：FTS 关键词搜索始终可用；分数归一化到 `[0,1]`；过滤内容空 chunk（空的或 scaffold 模板 `MEMORY.md` stub）；仅对会话 chunk 施加时间衰减；加源权重与访问频次提升；按 `maxResults` 封顶。已发布 provider 是纯 FTS-only，无 embedding 或向量路径：召回路径永不依赖 LLM 或 embedding 调用，保持 keyless 回放确定性（与 `recallable-compaction` 排除语义召回是同一约束）。向量 KNN、混合评分权重与 MMR 重排属于后续工作（见下），不作为已发布的配置。
 
-embedding provider 可选，默认永不随产品发布。DeepSeek 公开 API 无 embeddings 端点（V4-Pro/V4-Flash 仅 chat），因此默认部署跑 FTS-only；配置了 OpenAI 兼容 embeddings 端点（provider 名、model、dimensions）的部署通过同一 `dsh-llm` family seam 获得混合搜索。这是配置而非代码：向量路径绝不能使 keyless FTS 路径回退。
+embedding provider 是文档化的后续工作，默认永不随产品发布。DeepSeek 公开 API 无 embeddings 端点（V4-Pro/V4-Flash 仅 chat），因此默认部署跑 FTS-only；配置了 OpenAI 兼容 embeddings 端点（provider 名、model、dimensions）的部署可通过同一 `dsh-llm` family seam 获得混合搜索。这是配置而非代码：向量路径绝不能使 keyless FTS 路径回退。
 
 ### 初始注入
 
-会话开始时，记忆插件查询会话工作区的索引，把最多 `maxInjectedChunks` 条高分的 evergreen 记忆作为紧凑的"项目记忆"段落注入系统提示，与现有 `agent-instructions` context 并列。注入走同一混合搜索路径，因此继承评分、衰减与内容空过滤。`minScore` 阈值排除无关噪声。提示段落是静态字符串，点名 `memory_search` 与 `memory_get` 工具；注入的 chunk 渲染为可读知识卡片，而非原始事件 transcript。
+会话开始时，记忆插件查询会话工作区的索引，把最多 `maxInjectedChunks` 条高分的 evergreen 记忆作为紧凑的"项目记忆"段落注入系统提示，与现有 `agent-instructions` context 并列。注入走同一 FTS 搜索路径，因此继承评分、衰减与内容空过滤。`minScore` 阈值排除无关噪声。提示段落是静态字符串，点名 `memory_search` 与 `memory_get` 工具；注入的 chunk 渲染为可读知识卡片，而非原始事件 transcript。
+
+注入每会话仅一次，而非每轮一次：插件在会话事件流中标记已注入的快照，后续轮次原样复用此前缀。这使请求头跨轮次字节稳定，保持 KV 缓存前缀复用；注入绝不会在会话中途重排或重过滤 chunk 而移动前缀。
 
 ### 模型可用工具
 
@@ -56,7 +58,7 @@ embedding provider 可选，默认永不随产品发布。DeepSeek 公开 API �
 
 两条写入路径喂养索引：
 
-1. **策展写入**：`memory_set(path, content)` 工具与显式 CLI/命令入口让用户或模型把策展知识追加到 `MEMORY.md`。写入是经存储层的 markdown 编辑，随后重建索引。这是主路径，也是让记忆可信的路径——模型写持久结论，而非原始 transcript。
+1. **策展写入**：`memory_set(path, content)` 工具与显式 CLI/命令入口让用户或模型把策展知识追加到 `MEMORY.md`。写入是经存储层的 markdown 编辑，随后重建索引。`memory_set` 只接受 evergreen 路径（`MEMORY.md`、`workspace/MEMORY.md`），拒绝会话归档，使写边界比读表面更窄。这是主路径，也是让记忆可信的路径——模型写持久结论，而非原始 transcript。
 2. **会话归档**：会话结束时（配置 `saveOnEnd`）插件把有界会话摘要写入 `sessions/YYYY-MM-DD-{slug}-{sid8}.md`，使会话级历史可搜索而不污染策展知识。会话归档格式借用 `recallable-compaction` 的 frozen-index-chunk 思路：紧凑的 what-happened 卡片，而非完整 transcript（完整 transcript 已存在于会话日志）。
 
 watcher（可选，默认关）在搜索前对外部编辑的 `.md` 文件重建索引，沿用 grok 的 dirty-file 同步——用户在自己编辑器里改 `MEMORY.md` 后无需重启即可在召回中看到改动。删除的文件移除其 chunk。
@@ -76,13 +78,10 @@ memory:
   search:
     maxResults: 10
     minScore: 0.1
-    textWeight: 1.0
-    vectorWeight: 1.0
-    mmrEnabled: false
     temporalDecay:
       enabled: true
       halfLifeDays: 30
-  embedding:            # optional; empty = FTS-only
+  embedding:            # deferred follow-up; absent = FTS-only
     provider: ''
     model: ''
     dimensions: 0
@@ -108,8 +107,8 @@ seam 遵循 [capability-seam pattern](../../implemented/architecture/2026-06-13-
 留待观察再决定：
 
 - **Dream 整合**（grok 的 autoDream）：后台 LLM pass 把会话归档整合进策展工作区记忆，以时间与会话数为门——在观察到策展漂移或会话归档膨胀时。
-- **MMR 默认开启**与按源权重调参——在观察到召回结果冗余时。
-- **语义搜索成为默认**——需要一方 embeddings 端点；在那之前 embedding 保持可选配置。
+- **向量 KNN、混合评分权重与 MMR 默认开启**——已发布 provider 是 FTS-only；向量路径与 `textWeight`/`vectorWeight`/`mmrEnabled` 式旋钮在观察到冗余或语义召回失败时回归。未部署的旋钮不以死配置形式发布。
+- **语义搜索成为默认**——需要一方 embeddings 端点；在那之前 embedding 保持后续工作。
 - **跨设备同步与保留 GC**（会话归档的 max-age 修剪）——在观察到存储增长时。
 
 ## 备选方案
@@ -118,7 +117,7 @@ seam 遵循 [capability-seam pattern](../../implemented/architecture/2026-06-13-
 - **依赖第三方 MCP 记忆服务器** — 否决：[third-party-memory-mcp-examples](../../implemented/feature/2026-07-31-third-party-memory-mcp-examples.md) 决策明确把 account、model、embedding、storage、策展留在上游；产品自有的知识层需要一方语义和默认关闭的内嵌默认。
 - **向量优先搜索、embedding 默认开** — 否决：DeepSeek 无 embeddings 端点，因此 hybrid 不能是默认；FTS-only 作为 keyless、零依赖的地板才是诚实默认，向量是配置。
 - **把完整会话日志放进记忆** — 否决：transcript 已在会话日志中且可经 `session_query` 到达；重复它会以噪声与无界增长污染策展知识。
-- **模型可写任意记忆文件** — 否决：无界写权限有模型往 home 撒临时文件的风险；写入限定到已知路径（`MEMORY.md`、会话归档），以窄 `memory_set` 表面。
+- **模型可写任意记忆文件** — 否决：无界写权限有模型往 home 撒临时文件的风险；`memory_set` 写入限定到两个 evergreen 路径（`MEMORY.md`、`workspace/MEMORY.md`），会话归档仅由插件自身的会话结束路径写入。
 - **把记忆做成会话日志投影** — 否决：跨会话存活需要任一单会话日志之外的持久文件，且 markdown 可人工编辑而日志是 append-only。
 - **仅内存召回（无磁盘存储）** — 否决：记忆必须跨进程重启存活且可外部编辑；磁盘 markdown 加索引是最小的持久形态。
 - **把 `recallable-compaction` 的 checkpoint 机制复用于记忆** — 否决跨会话存储：该设计的 index checkpoints 是限定于活跃会话的冻结日志 stub，而记忆是策展、可编辑、会衰减的。二者互补；会话归档卡片借用其紧凑形态而不引入其机制。
@@ -127,8 +126,10 @@ seam 遵循 [capability-seam pattern](../../implemented/architecture/2026-06-13-
 
 - 一个 keyless 真实可运行示例端到端覆盖完整闭环：某会话经 `memory_set` 写入策展记忆，新会话的请求头显示注入的"项目记忆"段落，新会话里的 `memory_search` 工具调用检索到所写 chunk。带记忆注入与工具召回的会话满足 request-reconstruction 不变量。
 - `memory_search` 找到仅存在于策展记忆（而非当前会话日志）中的内容，带 source、path 与覆盖元数据；`memory_get` 精确读文件；两者都以类型化错误拒绝非 agent 调用者与从未存在的路径；工具 schema 与提示段落跨 pass 字节一致。
-- 无 embedding 配置时，每次注入与搜索都用 FTS-only（`textWeight = 1.0`），零 LLM 或 embedding 调用——由 keyless 示例与包测试断言。
-- Evergreen chunk（global/workspace）豁免时间衰减；会话 chunk 按配置半衰期衰减；内容空 scaffold chunk 永不进入结果或注入。
+- 无 embedding 配置时，每次注入与搜索都是 FTS-only，零 LLM 或 embedding 调用——由 keyless 示例与包测试断言。不发布死的混合评分与 MMR 配置。
+- 注入每会话仅一次，注入后的请求头跨后续轮次字节稳定（KV 缓存前缀复用），由多轮 keyless 快照断言。
+- Evergreen chunk（global/workspace）豁免时间衰减；会话 chunk 按配置半衰期衰减；重建索引时不变内容保留 chunk 创建时间戳（衰减不被重启重置）；内容空 scaffold chunk 永不进入结果或注入。
+- 搜索结果携带与 `memory_get` 接受的相同相对品牌路径；搜索命中可经 `memory_get` 读回。
 - 存储根经 `dshHomePath('memory')` 解析；配置 `DSH_HOME` 无需其他改动即可重定位记忆。
 - 销毁移除插件的注册、工具与 watcher（HMR 安全测试）；`doc-sync` 目录在同一变更中更新；新源码目录保持每文件 100% 覆盖。
 - 打包、配置与 seam JSDoc 点名全部三个角色；README 以规范 Model Experience 格式记录 model、token、KV-cache 效应，包括 FTS-only 默认的零 embedding 成本。

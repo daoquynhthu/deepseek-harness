@@ -6,7 +6,6 @@ import {
   applyTemporalDecay,
   isContentFree,
   isEvergreenScope,
-  mergeScores,
 } from '../src/scoring.ts'
 import { MemoryPath } from '../src/path.ts'
 
@@ -18,8 +17,6 @@ describe('config validation edge cases', () => {
     [{ maxResults: 1.5 }, /maxResults/],
     [{ minScore: -0.1 }, /minScore/],
     [{ minScore: 1.1 }, /minScore/],
-    [{ textWeight: -1 }, /textWeight/],
-    [{ vectorWeight: -1 }, /vectorWeight/],
     [{ halfLifeDays: 0 }, /halfLifeDays/],
     [{ halfLifeDays: -5 }, /halfLifeDays/],
     [{ sourceWeights: { global: -1 } }, /source weight/],
@@ -42,15 +39,11 @@ describe('config validation edge cases', () => {
     const config = new MemoryServiceConfig({
       maxResults: 3,
       minScore: 0.5,
-      textWeight: 0.7,
-      vectorWeight: 0.3,
-      mmrEnabled: true,
       temporalDecayEnabled: false,
       halfLifeDays: 7,
       sourceWeights: { session: 2 },
     })
     expect(config.search.maxResults).toBe(3)
-    expect(config.search.mmrEnabled).toBe(true)
     expect(config.search.temporalDecay).toEqual({ enabled: false, halfLifeDays: 7 })
     expect(config.sourceWeights.session).toBe(2)
     expect(config.sourceWeights.global).toBe(1)
@@ -203,14 +196,6 @@ describe('scoring coverage edges', () => {
   it('clamps source-boosted scores and reaches the access boost cap', () => {
     expect(applySourceAndAccess(0.9, 'global', 0, { global: 1, workspace: 1, session: 1 })).toBeCloseTo(0.9)
     expect(applySourceAndAccess(0.9, 'session', 1000, { global: 1, workspace: 1, session: 1 })).toBe(1)
-  })
-
-  it('merges scores across every mode combination', () => {
-    expect(mergeScores(undefined, undefined, 0.5, 0.5)).toBe(0)
-    expect(mergeScores(0.4, undefined, 1, 0)).toBeCloseTo(0.4)
-    expect(mergeScores(undefined, 0.4, 0, 1)).toBeCloseTo(0.4)
-    expect(mergeScores(0.6, 0.4, 1, 1)).toBeCloseTo(0.5)
-    expect(mergeScores(0, 0, 0, 0)).toBe(0)
   })
 
   it('reports evergreen scope membership', () => {

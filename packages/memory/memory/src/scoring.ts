@@ -119,25 +119,3 @@ export function applySourceAndAccess(
   const boost = Math.min(0.2, Math.log1p(accessCount) * 0.05)
   return Math.min(1, weighted + boost)
 }
-
-/**
- * Merge an FTS keyword score and an optional vector similarity score.
- * @param ftsScore - normalized keyword score, or `undefined` in FTS-only mode.
- * @param vectorScore - normalized similarity score, or `undefined` when unavailable.
- * @param textWeight - FTS weight.
- * @param vectorWeight - vector weight.
- * @returns the merged score in `[0, 1]`.
- */
-export function mergeScores(
-  ftsScore: number | undefined,
-  vectorScore: number | undefined,
-  textWeight: number,
-  vectorWeight: number,
-): number {
-  if (ftsScore === undefined && vectorScore === undefined) return 0
-  const text = ftsScore ?? 0
-  const vector = vectorScore ?? 0
-  const total = text * textWeight + vector * vectorWeight
-  const weights = (ftsScore === undefined ? 0 : textWeight) + (vectorScore === undefined ? 0 : vectorWeight)
-  return weights === 0 ? 0 : Math.min(1, total / weights)
-}

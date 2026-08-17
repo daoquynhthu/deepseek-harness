@@ -192,9 +192,6 @@ describe('query helpers', () => {
     const config = {
       maxResults: 10,
       minScore: 0,
-      textWeight: 1,
-      vectorWeight: 1,
-      mmrEnabled: false,
       temporalDecay: { enabled: true, halfLifeDays: 30 },
       sourceWeights: { global: 1, workspace: 1, session: 1 },
     }
@@ -204,7 +201,7 @@ describe('query helpers', () => {
     expect(makeSnippet('# only\n\n# two')).toBe('# only\n\n# two')
   })
 
-  it('caps the reported total at the scan limit', async () => {
+  it('reports the true match total before the result cap', async () => {
     const db = await openMemoryDatabase(':memory:', 'wal')
     try {
       for (const id of ['a', 'b', 'c']) {
@@ -215,7 +212,7 @@ describe('query helpers', () => {
       }
       const scan = keywordScan(db, ['deployment'], undefined, 2)
       expect(scan.rows).toHaveLength(2)
-      expect(scan.total).toBe(2)
+      expect(scan.total).toBe(3)
     } finally {
       db.close()
     }
@@ -296,6 +293,7 @@ describe('MarkdownMemoryService', () => {
       expect(hits.results.length).toBeGreaterThan(0)
       expect(hits.results[0]!.chunk.text).toContain('Deployment convention')
       expect(hits.results[0]!.mode).toBe('fts-only')
+      expect(await ctx.memory.read(hits.results[0]!.chunk.path)).toContain('Deployment convention')
 
       const injected = await ctx.memory.inject({ maxChunks: 10 })
       const injectedSources = injected.map(chunk => chunk.source)
@@ -405,6 +403,31 @@ describe('MarkdownMemoryService', () => {
       await ctx.memory.write(global, '# Project memory\n\nDeployment convention: pin Node LTS.')
       const hits = await ctx.memory.search({ query: 'Deployment convention' })
       expect(hits.results.length).toBeGreaterThan(0)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('preserves chunk creation timestamps across reindexes of unchanged content', async () => {
+    const ctx = await mount(await temporaryPath())
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      const content = '# Project memory\n\nDeployment convention: pin Node LTS.'
+      await ctx.memory.write(global, content)
+      const service = ctx.memory as unknown as MarkdownMemoryService
+      const db = service['_db']!
+      const createdBefore = (db.prepare('SELECT created_at FROM chunks WHERE path = ?')
+        .get(global) as { created_at: number }).created_at
+
+      await ctx.memory.write(global, content)
+      const createdAfter = (db.prepare('SELECT created_at FROM chunks WHERE path = ?')
+        .get(global) as { created_at: number }).created_at
+      expect(createdAfter).toBe(createdBefore)
+
+      await ctx.memory.write(global, `${content}\n\nA new conclusion.`)
+      const changedCreated = (db.prepare('SELECT created_at FROM chunks WHERE path = ?')
+        .get(global) as { created_at: number }).created_at
+      expect(changedCreated).toBeGreaterThanOrEqual(createdBefore)
     } finally {
       await ctx.fiber.dispose()
     }

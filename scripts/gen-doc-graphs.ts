@@ -503,7 +503,7 @@ const SERVICE_ROLES: ServiceRole[] = [
     mode: 'seam',
     implementations: ['memory-markdown'],
     consumers: ['tool-memory'],
-    note: 'The provider persists curated knowledge as indexed markdown under the harness home and serves hybrid recall; tool-memory is the model-facing consumer with memory_search/get/set plus session-start injection.',
+    note: 'The provider persists curated knowledge as indexed markdown under the harness home and serves keyword recall; tool-memory is the model-facing consumer with memory_search/get/set plus session-start injection.',
   },
   {
     key: 'directoryPicker',

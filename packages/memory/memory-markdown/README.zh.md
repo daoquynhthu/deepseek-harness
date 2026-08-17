@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-**基于 markdown 的记忆 Service Provider**：在宿主主目录下的可编辑 markdown 文件之上实现 `ctx.memory`，并用 SQLite FTS5 为混合检索建立索引。向量检索是可选开启的：没有 embedding provider 时，检索路径保持仅 FTS，零 LLM 或 embedding 调用。
+**基于 markdown 的记忆 Service Provider**：在宿主主目录下的可编辑 markdown 文件之上实现 `ctx.memory`，并用 SQLite FTS5 为关键词检索建立索引。现装路径仅 FTS，零 LLM 或 embedding 调用；向量检索是后续工作。
 
 本包持有策展记忆 seam 的存储、索引与召回。服务契约在 [`@deepseek-ai/dsh-memory`](../memory)；面向模型的 Consumer 是 [`@deepseek-ai/dsh-tool-memory`](../tool-memory)。
 
@@ -16,7 +16,7 @@
   {workspace_hash}/
     MEMORY.md                            # project-level curated knowledge
     sessions/YYYY-MM-DD-{slug}-{sid8}.md # archived session summaries
-    index.sqlite                         # chunk index: FTS5 + optional vec0
+    index.sqlite                         # chunk index: FTS5 keyword search
 ```
 
 索引数据库是一个专用 SQLite 文件，以属主权限（`0600`）创建。其 schema 版本与应用 id 防止无关数据库误用：无法识别的派生索引或外部应用 id 会响亮失败，而不是被静默重置。
@@ -59,6 +59,6 @@ provider 不发起任何模型请求。召回由 Consumer 触发，其结果跟�
 
 ## Known Limitations and Deferred Work
 
-- **默认仅 FTS**——混合向量召回是可选开启的，且需要 embedding provider；没有它时每次检索都是 `fts-only`。`chunks_vec` 表以及 `hybrid`/`embedding-fallback` 召回模式为该可选路径而存在。
+- **仅 FTS**——向量路径（`chunks_vec` 表、混合评分、MMR 重排）是后续工作；每次检索都是 `fts-only`，零 LLM 或 embedding 调用。
 - **仅英文停用词**——关键词提取移除固定的英文停用词集；非英文查询分词时不做语言特定过滤。
 - **无文件监视器**——外部对记忆文件的编辑对 `read`（会刷新状态）可见，但索引在下次打开或下次 `write` 重新索引时刷新，而不是进程内变更事件。

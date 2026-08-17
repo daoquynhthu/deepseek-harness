@@ -12,7 +12,7 @@ This package defines the service, the memory-path and chunk vocabulary, and the 
 
 | Member | Meaning |
 |---|---|
-| `search(request)` | Run the configured hybrid search pipeline and return ranked results with per-result retrieval mode and coverage metadata. Optional `scope`, `limit`, and `minScore` override the service configuration; `signal` cancels. |
+| `search(request)` | Run the FTS keyword search pipeline and return ranked results with per-result retrieval mode and coverage metadata. Optional `scope`, `limit`, and `minScore` override the service configuration; `signal` cancels. |
 | `read(path)` | Return the current content of one memory file. Rejects with `MEMORY_FILE_NOT_FOUND` when absent. |
 | `write(path, content)` | Replace one memory file's content atomically. |
 | `list()` | Return known memory files with size and modification metadata, in deterministic order. |
@@ -37,9 +37,6 @@ The path factory rejects any other path, keeping model write authority narrow. S
 |---|---|---|
 | `maxResults` | `10` | Maximum results returned by one search. |
 | `minScore` | `0.1` | Minimum accepted score; lower-scoring chunks are dropped. |
-| `textWeight` | `1` | FTS keyword weight in the merged score. |
-| `vectorWeight` | `1` | Vector similarity weight in the merged score; unused in FTS-only mode. |
-| `mmrEnabled` | `false` | Apply MMR diversity re-ranking when enabled. |
 | `temporalDecayEnabled` | `true` | Apply exponential decay to `session` chunks when enabled. |
 | `halfLifeDays` | `30` | Decay half-life in days; `lambda = ln(2) / halfLifeDays`. |
 | `sourceWeights` | `{ global: 1, workspace: 1, session: 1 }` | Per-scope score weights. |
@@ -77,5 +74,5 @@ Injection happens at the session start, before the model's first turn, so it joi
 
 ## Known Limitations and Deferred Work
 
-- **The service is backend-neutral but the shipped backend is FTS-only by default** — hybrid vector retrieval is opt-in in `dsh-memory-markdown` and requires an embedding provider; without one, every search is `fts-only` with zero LLM or embedding calls.
+- **The shipped backend is FTS-only** — vector retrieval and hybrid scoring are deferred follow-ups; every search is `fts-only` with zero LLM or embedding calls. See the cross-session memory Agent Note's follow-ups for the deferred vector path.
 - **No consolidation or forgetting** — memory is curated by explicit `memory_set` writes and search-driven access counts; there is no background "dream" pass, file watcher, or automatic promotion from session archives.

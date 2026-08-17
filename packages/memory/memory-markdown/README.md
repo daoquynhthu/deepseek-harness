@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-The **markdown-backed memory Service Provider**: implements `ctx.memory` over editable markdown files under the harness home, indexed with SQLite FTS5 for hybrid search. Vector retrieval is opt-in: without an embedding provider the search path stays FTS-only with zero LLM or embedding calls.
+The **markdown-backed memory Service Provider**: implements `ctx.memory` over editable markdown files under the harness home, indexed with SQLite FTS5 for keyword search. The shipped path is FTS-only with zero LLM or embedding calls; vector retrieval is a deferred follow-up.
 
 This package owns storage, indexing, and retrieval for the curated-memory seam. The service contract lives in [`@deepseek-ai/dsh-memory`](../memory); the model-facing consumer is [`@deepseek-ai/dsh-tool-memory`](../tool-memory).
 
@@ -16,7 +16,7 @@ The memory root resolves through the harness home (`{dshHome}/memory`, overridab
   {workspace_hash}/
     MEMORY.md                            # project-level curated knowledge
     sessions/YYYY-MM-DD-{slug}-{sid8}.md # archived session summaries
-    index.sqlite                         # chunk index: FTS5 + optional vec0
+    index.sqlite                         # chunk index: FTS5 keyword search
 ```
 
 The index database is a dedicated SQLite file created owner-only (`0600`). Its schema version and application id protect it from unrelated databases: an unrecognized derived index or a foreign application id fails loud instead of being reset silently.
@@ -59,6 +59,6 @@ The provider writes no model requests. Recall is triggered by the consumer, whos
 
 ## Known Limitations and Deferred Work
 
-- **FTS-only by default** — hybrid vector retrieval is opt-in and requires an embedding provider; without one every search is `fts-only`. The `chunks_vec` table and the `hybrid`/`embedding-fallback` retrieval modes exist for that opt-in path.
+- **FTS-only** — the vector path (`chunks_vec` table, hybrid scoring, MMR re-ranking) is a deferred follow-up; every search is `fts-only` with zero LLM or embedding calls.
 - **English stop words only** — keyword extraction removes a fixed English stop-word set; non-English queries tokenize with no language-specific filtering.
 - **No file watcher** — external edits to a memory file are visible to `read` (which refreshes state), but the index is refreshed on the next open or the next `write` reindex, not on an in-process change event.

@@ -62,6 +62,21 @@ export interface MemorySearchArgs {
   readonly limit?: number
 }
 
+/** Parse a model-supplied writable memory path, rejecting session archives.
+ * @param path - model-supplied path string.
+ * @returns the branded writable memory path.
+ * @throws {@link MemoryError} `MEMORY_INVALID_PATH` when the path is not writable.
+ */
+export function parseWritableMemoryPath(path: string): MemoryPathValue {
+  const trimmed = path.trim()
+  if (trimmed === 'MEMORY.md') return MemoryPath('global', 'MEMORY.md')
+  if (trimmed === 'workspace/MEMORY.md') return MemoryPath('workspace', 'MEMORY.md')
+  throw new MemoryError(
+    `memory: "${path}" is not a writable memory path`,
+    'MEMORY_INVALID_PATH',
+  )
+}
+
 /** Normalize a search limit argument to a safe positive integer or undefined.
  * @param limit - model-supplied limit argument.
  * @returns the normalized limit, or `undefined` when omitted.
@@ -81,5 +96,6 @@ export const toolInput = {
   memoryGetParameters,
   memorySetParameters,
   parseMemoryPath,
+  parseWritableMemoryPath,
   normalizeLimit,
 }

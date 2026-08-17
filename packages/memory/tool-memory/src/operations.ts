@@ -9,7 +9,7 @@ import { MemoryError } from '@deepseek-ai/dsh-memory'
 import type { MemorySearchPage } from '@deepseek-ai/dsh-memory'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
-import { normalizeLimit, parseMemoryPath, type MemorySearchArgs } from './input.ts'
+import { normalizeLimit, parseMemoryPath, parseWritableMemoryPath, type MemorySearchArgs } from './input.ts'
 
 /** Reject tool calls that are not bound to an agent session.
  * @param exec - the tool run context.
@@ -86,7 +86,7 @@ export async function executeMemorySet(
 ): Promise<string> {
   requireAgent(exec)
   try {
-    const branded = parseMemoryPath(path)
+    const branded = parseWritableMemoryPath(path)
     await ctx.memory.write(branded, content)
   } catch (error: unknown) {
     rethrowMemoryError(error)

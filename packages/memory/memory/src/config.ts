@@ -10,10 +10,6 @@ import type { MemorySearchConfig, MemoryScope, TemporalDecayConfig } from './typ
 export const MEMORY_DEFAULT_MAX_RESULTS = 10
 /** Default minimum accepted score. */
 export const MEMORY_DEFAULT_MIN_SCORE = 0.1
-/** Default FTS keyword weight. */
-export const MEMORY_DEFAULT_TEXT_WEIGHT = 1.0
-/** Default vector similarity weight. */
-export const MEMORY_DEFAULT_VECTOR_WEIGHT = 1.0
 /** Default temporal decay half-life in days. */
 export const MEMORY_DEFAULT_HALF_LIFE_DAYS = 30
 
@@ -26,12 +22,6 @@ export interface Config {
   maxResults?: number
   /** Minimum accepted score; lower-scoring chunks are dropped. Defaults to 0.1. */
   minScore?: number
-  /** FTS keyword weight in the merged score. Defaults to 1. */
-  textWeight?: number
-  /** Vector similarity weight in the merged score. Defaults to 1. */
-  vectorWeight?: number
-  /** Apply MMR diversity re-ranking when enabled. Defaults to false. */
-  mmrEnabled?: boolean
   /** Apply exponential decay to session chunks when enabled. Defaults to true. */
   temporalDecayEnabled?: boolean
   /** Decay half-life in days. Defaults to 30. */
@@ -83,20 +73,6 @@ export class MemoryServiceConfig {
         'MEMORY_INVALID_CONFIG',
       )
     }
-    const textWeight = config.textWeight ?? MEMORY_DEFAULT_TEXT_WEIGHT
-    if (!Number.isFinite(textWeight) || textWeight < 0) {
-      throw new MemoryError(
-        'memory: textWeight must be a non-negative finite number',
-        'MEMORY_INVALID_CONFIG',
-      )
-    }
-    const vectorWeight = config.vectorWeight ?? MEMORY_DEFAULT_VECTOR_WEIGHT
-    if (!Number.isFinite(vectorWeight) || vectorWeight < 0) {
-      throw new MemoryError(
-        'memory: vectorWeight must be a non-negative finite number',
-        'MEMORY_INVALID_CONFIG',
-      )
-    }
     const halfLifeDays = config.halfLifeDays ?? MEMORY_DEFAULT_HALF_LIFE_DAYS
     if (!Number.isFinite(halfLifeDays) || halfLifeDays <= 0) {
       throw new MemoryError(
@@ -107,9 +83,6 @@ export class MemoryServiceConfig {
     this.search = Object.freeze({
       maxResults,
       minScore,
-      textWeight,
-      vectorWeight,
-      mmrEnabled: config.mmrEnabled ?? false,
       temporalDecay: Object.freeze({
         enabled: config.temporalDecayEnabled ?? true,
         halfLifeDays,

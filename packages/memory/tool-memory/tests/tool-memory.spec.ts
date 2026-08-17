@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, type Fiber } from '@deepseek-ai/cordis'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { CallId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import {
   MemoryService,
@@ -15,7 +16,7 @@ import {
 } from '@deepseek-ai/dsh-memory'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
-import { normalizeLimit, parseMemoryPath } from '../src/input.ts'
+import { normalizeLimit, parseMemoryPath, parseWritableMemoryPath } from '../src/input.ts'
 import { memoryErrorText, rethrowMemoryError } from '../src/operations.ts'
 import { presentSearchCall, renderSearchPage } from '../src/presentation.ts'
 import * as ToolMemory from '../src/index.ts'
@@ -80,7 +81,7 @@ class FakeMemory extends MemoryService {
 interface Mounted {
   readonly ctx: Context
   readonly fiber: Fiber
-  readonly caller: Agent
+  readonly caller: Agent & { session: { events: SessionEvent[] } }
   call(name: string, args: unknown, options?: {
     agent?: Agent | null | undefined
     signal?: AbortSignal | undefined
@@ -121,8 +122,8 @@ async function mount(config: ToolMemory.Config = {}): Promise<Mounted> {
   }
 }
 
-function fakeAgent(): Agent {
-  return { id: 'agent-1' } as unknown as Agent
+function fakeAgent(): Agent & { session: { events: SessionEvent[] } } {
+  return { id: 'agent-1', session: { events: [] } } as unknown as Agent & { session: { events: SessionEvent[] } }
 }
 
 function text(result: ToolExecutionResult): string {
@@ -244,6 +245,13 @@ describe('tool execution', () => {
     const result = await mounted.call('memory_set', { path: 'other.md', content: '# Nope' })
     expect(result.isError).toBe(true)
     expect(errorCode(result)).toBe('MEMORY_INVALID_PATH')
+
+    const archive = await mounted.call(
+      'memory_set',
+      { path: 'sessions/2026-08-16-demo-a1b2c3d4.md', content: '# Nope' },
+    )
+    expect(archive.isError).toBe(true)
+    expect(errorCode(archive)).toBe('MEMORY_INVALID_PATH')
   })
 })
 
@@ -260,6 +268,13 @@ describe('path and limit normalization', () => {
     expect(() => parseMemoryPath('other.md')).toThrow(MemoryError)
     expect(() => parseMemoryPath('workspace/other.md')).toThrow(MemoryError)
     expect(() => parseMemoryPath('sessions/2026-08-16.md')).toThrow(MemoryError)
+  })
+
+  it('parses writable paths and rejects session archives for memory_set', () => {
+    expect(parseWritableMemoryPath('MEMORY.md')).toBe(MemoryPath('global', 'MEMORY.md'))
+    expect(parseWritableMemoryPath('workspace/MEMORY.md')).toBe(MemoryPath('workspace', 'MEMORY.md'))
+    expect(() => parseWritableMemoryPath('sessions/2026-08-16-demo-a1b2c3d4.md')).toThrow(MemoryError)
+    expect(() => parseWritableMemoryPath('other.md')).toThrow(MemoryError)
   })
 
   it('normalizes limits to a positive safe integer or undefined', () => {
@@ -321,6 +336,25 @@ describe('session-start injection', () => {
     expect(block.type).toBe('text')
     expect((block as { text: string }).text).toContain('Global convention')
     expect(messages[0]!.source).toMatchObject({ kind: 'plugin', plugin: 'tool-memory', form: 'snapshot' })
+  })
+
+  it('injects only once per session, reusing the existing prefix on later steps', async () => {
+    const mounted = await mount({ maxInjectedChunks: 2 })
+    let calls = 0
+    FakeMemory.searchImpl = () => {
+      calls += 1
+      return Promise.resolve([chunk('Global convention.', 'global')])
+    }
+    const first = await mounted.preStep({ step: 1 })
+    const injected = (first as { messages: UserMessage[] }).messages
+    expect(injected).toHaveLength(1)
+    mounted.caller.session.events.push({
+      type: 'user/message',
+      data: injected[0]!,
+    } as SessionEvent)
+    const again = await mounted.preStep({ step: 1 })
+    expect((again as { messages: UserMessage[] }).messages).toEqual([])
+    expect(calls).toBe(1)
   })
 
   it('skips injection when no chunks, later steps, aborted, or rejected', async () => {

@@ -10,7 +10,6 @@ import {
   isEvergreenScope,
   isSessionArchivePath,
   isWorkspaceMemoryPath,
-  mergeScores,
   resolveSearchLimits,
   scopeOfPath,
   type MemoryChunk,
@@ -37,9 +36,6 @@ function config(over: Partial<MemorySearchConfig> = {}): MemorySearchConfig {
   return {
     maxResults: 10,
     minScore: 0.1,
-    textWeight: 1,
-    vectorWeight: 1,
-    mmrEnabled: false,
     temporalDecay: EVERGREEN_DECAY,
     sourceWeights: { global: 1, workspace: 1, session: 1 },
     ...over,
@@ -130,7 +126,7 @@ describe('scoring helpers', () => {
     expect(old).toBeCloseTo(0.5, 3)
   })
 
-  it('applies source weights and access boost, then merges scores', () => {
+  it('applies source weights and access boost', () => {
     const scored = applySourceAndAccess(
       0.8,
       'session',
@@ -138,8 +134,6 @@ describe('scoring helpers', () => {
       { global: 1, workspace: 1, session: 1.5 },
     )
     expect(scored).toBeGreaterThan(0.8)
-    const merged = mergeScores(0.6, 0.4, 0.5, 0.5)
-    expect(merged).toBeCloseTo(0.5)
   })
 })
 

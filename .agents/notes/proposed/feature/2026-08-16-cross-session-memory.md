@@ -33,13 +33,15 @@ Three scopes follow grok: `global` (evergreen, all workspaces), `workspace` (eve
 
 ### Index and hybrid search
 
-`index.sqlite` holds a `chunks` table (path, start/end line, text, hash, source, access count, timestamps), a contentless FTS5 virtual table for BM25 keyword search, and — when an embedding provider is configured — a `vec0` virtual table for KNN. The search pipeline is grok's: FTS keyword search always available; vector KNN merged when embeddings exist; scores normalized to `[0,1]`; content-free chunks (empty or scaffold-template `MEMORY.md` stubs) filtered; temporal decay applied to session chunks only; source weights plus access-frequency boost; optional MMR diversity re-ranking; capped by `maxResults`. Graceful degradation is load-bearing: with no embedding provider, the mode is FTS-only with `textWeight = 1.0`, and the recall path never depends on an LLM or embedding call, preserving keyless replay determinism (the same constraint that ruled out semantic recall in `recallable-compaction`).
+`index.sqlite` holds a `chunks` table (relative branded path, start/end line, text, hash, source, access count, timestamps) and a contentless FTS5 virtual table for BM25 keyword search. The search pipeline follows grok's keyword side: FTS keyword search always available; scores normalized to `[0,1]`; content-free chunks (empty or scaffold-template `MEMORY.md` stubs) filtered; temporal decay applied to session chunks only; source weights plus access-frequency boost; capped by `maxResults`. The shipped provider is FTS-only with no embedding or vector path: the recall path never depends on an LLM or embedding call, preserving keyless replay determinism (the same constraint that ruled out semantic recall in `recallable-compaction`). Vector KNN, hybrid scoring weights, and MMR re-ranking remain follow-ups (below), not shipped configuration.
 
-The embedding provider is optional and never shipped by default. DeepSeek's public API exposes no embeddings endpoint (V4-Pro/V4-Flash are chat-only), so a default deployment runs FTS-only; a deployment that configures an OpenAI-compatible embeddings endpoint (provider name, model, dimensions) gets hybrid search through the same `dsh-llm` family seam. This is configuration, not code: the vector path must never regress the keyless FTS path.
+The embedding provider is a documented follow-up, never shipped by default. DeepSeek's public API exposes no embeddings endpoint (V4-Pro/V4-Flash are chat-only), so a default deployment runs FTS-only; a deployment that configures an OpenAI-compatible embeddings endpoint (provider name, model, dimensions) could get hybrid search through the same `dsh-llm` family seam. This is configuration, not code: the vector path must never regress the keyless FTS path.
 
 ### Initial injection
 
-At session start, the memory plugin queries the index for the session's workspace and injects up to a configured `maxInjectedChunks` of top-scoring evergreen memory into the system prompt as a compact "Project memory" section, alongside the existing `agent-instructions` context. Injection reads the same hybrid search path, so it inherits scoring, decay, and content-free filtering. A `minScore` threshold keeps irrelevant noise out. The prompt section is a static string naming the `memory_search` and `memory_get` tools; injected chunks render as readable knowledge cards, not raw event transcripts.
+At session start, the memory plugin queries the index for the session's workspace and injects up to a configured `maxInjectedChunks` of top-scoring evergreen memory into the system prompt as a compact "Project memory" section, alongside the existing `agent-instructions` context. Injection reads the same FTS search path, so it inherits scoring, decay, and content-free filtering. A `minScore` threshold keeps irrelevant noise out. The prompt section is a static string naming the `memory_search` and `memory_get` tools; injected chunks render as readable knowledge cards, not raw event transcripts.
+
+Injection happens once per session, not once per turn: the plugin marks the injected snapshot in the session event stream and later turns reuse that prefix unchanged. This keeps the request header byte-stable across turns and preserves KV-cache prefix reuse; injection never re-sorts or re-filters chunks in ways that would move the prefix mid-session.
 
 ### Model-facing tools
 
@@ -56,7 +58,7 @@ The search tools expose prior knowledge rather than the operation performing the
 
 Two write paths feed the index:
 
-1. **Curated writes**: a `memory_set(path, content)` tool and an explicit CLI/command affordance let the user or model append curated knowledge to `MEMORY.md`. Writes are markdown edits through the storage layer, then reindexed. This is the primary path and the one that makes memory trustworthy — the model writes durable conclusions, not raw transcripts.
+1. **Curated writes**: a `memory_set(path, content)` tool and an explicit CLI/command affordance let the user or model append curated knowledge to `MEMORY.md`. Writes are markdown edits through the storage layer, then reindexed. `memory_set` accepts only the evergreen paths (`MEMORY.md`, `workspace/MEMORY.md`) and rejects session archives, keeping the write boundary narrower than the read surface. This is the primary path and the one that makes memory trustworthy — the model writes durable conclusions, not raw transcripts.
 2. **Session archive**: at session end, the plugin writes a bounded session summary to `sessions/YYYY-MM-DD-{slug}-{sid8}.md` when configured (`saveOnEnd`), so session-level history becomes searchable without polluting curated knowledge. The session-archive format borrows the frozen-index-chunk idea from `recallable-compaction`: a compact what-happened card, not a full transcript (the full transcript already lives in the session log).
 
 A watcher (optional, default-off) reindexes externally edited `.md` files before search, following grok's dirty-file sync — a user editing `MEMORY.md` in their editor sees the edit in recall without a restart. Deleted files drop their chunks.
@@ -76,13 +78,10 @@ memory:
   search:
     maxResults: 10
     minScore: 0.1
-    textWeight: 1.0
-    vectorWeight: 1.0
-    mmrEnabled: false
     temporalDecay:
       enabled: true
       halfLifeDays: 30
-  embedding:            # optional; empty = FTS-only
+  embedding:            # deferred follow-up; absent = FTS-only
     provider: ''
     model: ''
     dimensions: 0
@@ -108,8 +107,8 @@ The seam follows the [capability-seam pattern](../../implemented/architecture/20
 Deferred until observation calls for them:
 
 - **Dream consolidation** (grok's autoDream): background LLM pass consolidating session archives into curated workspace memory, gated by time and session-count — on observed curator drift or session-archive sprawl.
-- **MMR default-on** and per-source weight tuning — on observed redundancy in recall results.
-- **Semantic search as default** — requires a first-party embeddings endpoint; until then embedding stays opt-in configuration.
+- **Vector KNN, hybrid scoring weights, and MMR default-on** — the shipped provider is FTS-only; a vector path plus `textWeight`/`vectorWeight`/`mmrEnabled`-style knobs return on observed redundancy or semantic recall failures. Deferred knobs are not shipped as dead configuration.
+- **Semantic search as default** — requires a first-party embeddings endpoint; until then embedding stays a follow-up.
 - **Cross-device sync and retention GC** (max-age pruning of session archives) — on observed storage growth.
 
 ## Alternatives considered
@@ -118,7 +117,7 @@ Deferred until observation calls for them:
 - **Rely on third-party MCP memory servers** — rejected: the [third-party-memory-mcp-examples](../../implemented/feature/2026-07-31-third-party-memory-mcp-examples.md) decision explicitly keeps account, model, embedding, storage, and curation upstream; a product-owned knowledge layer needs first-party semantics and an off-by-default embedded default.
 - **Vector-first search, embeddings default-on** — rejected: DeepSeek exposes no embeddings endpoint, so hybrid cannot be the default; FTS-only as the keyless, dependency-free floor is the honest default, with vector as configuration.
 - **Full session logs into memory** — rejected: the transcript already lives in the session log and is reachable via `session_query`; duplicating it pollutes curated knowledge with noise and unbounded growth.
-- **Model-authored arbitrary memory files** — rejected: unbounded write authority risks a model littering the home with ad-hoc files; writes stay scoped to known paths (`MEMORY.md`, session archives) with a narrow `memory_set` surface.
+- **Model-authored arbitrary memory files** — rejected: unbounded write authority risks a model littering the home with ad-hoc files; `memory_set` writes stay scoped to the two evergreen paths (`MEMORY.md`, `workspace/MEMORY.md`), and session archives are written only by the plugin's own session-end path.
 - **Memory as a session-log projection** — rejected: cross-session survival requires durable files outside any one session's log, and markdown is human-editable while the log is append-only.
 - **In-memory-only recall (no on-disk store)** — rejected: memory must survive process restarts and be externally editable; on-disk markdown plus an index is the smallest durable form.
 - **Reuse `recallable-compaction`'s checkpoint machinery for memory** — rejected for the cross-session store: that design's index checkpoints are frozen log stubs scoped to a live session, whereas memory is curated, editable, and decays. The two are complementary; the session-archive card borrows the compact form without importing the machinery.
@@ -127,8 +126,10 @@ Deferred until observation calls for them:
 
 - A keyless real-runnable example covers the full loop end to end: a session writes curated memory via `memory_set`, a fresh session's request header shows the injected "Project memory" section, and a `memory_search` tool call in the fresh session retrieves the written chunk. Request-reconstruction invariants pass over sessions with memory injection and tool recall.
 - `memory_search` finds content that exists only in curated memory (not in the current session log), with source, path, and coverage metadata; `memory_get` reads the file exactly; both reject non-agent callers and never-existing paths with typed errors; tool schemas and the prompt section are byte-identical across passes.
-- With no embedding config, every injection and search uses FTS-only (`textWeight = 1.0`) with zero LLM or embedding calls — asserted by the keyless example and by package tests.
-- Evergreen chunks (global/workspace) are exempt from temporal decay; session chunks decay with the configured half-life; content-free scaffold chunks never appear in results or injection.
+- With no embedding config, every injection and search is FTS-only with zero LLM or embedding calls — asserted by the keyless example and by package tests. Dead hybrid-scoring and MMR configuration is not shipped.
+- Injection fires once per session and the injected request header is byte-stable across later turns (KV-cache prefix reuse), asserted by a multi-turn keyless snapshot.
+- Evergreen chunks (global/workspace) are exempt from temporal decay; session chunks decay with the configured half-life; reindexing unchanged content preserves chunk creation timestamps (decay is not reset by restart); content-free scaffold chunks never appear in results or injection.
+- Search results carry the same relative branded paths accepted by `memory_get`; a search hit reads back through `memory_get`.
 - The storage root resolves through `dshHomePath('memory')`; a configured `DSH_HOME` relocates memory with no other change.
 - Disposal removes the plugin's registrations, tools, and watcher (HMR-safety test); `doc-sync` catalogs update in the same change; new source directories hold per-file 100% coverage.
 - The packaging, config, and seam JSDoc name all three roles; the README documents model, token, and KV-cache effects in the canonical Model Experience format, including the FTS-only default's zero embedding cost.

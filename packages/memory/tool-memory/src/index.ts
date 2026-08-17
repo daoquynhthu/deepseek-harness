@@ -11,7 +11,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -107,11 +107,12 @@ export function apply(ctx: Context, config: Config): void {
   }))
 
   ctx.on('agent/pre-step', async (
-    { step, signal },
+    { agent, step, signal },
     next,
   ): Promise<PreStepDecision> => {
     const decision = await next()
     if (decision.kind === 'reject' || step !== 1 || signal.aborted) return decision
+    if (hasInjectedSnapshot(agent)) return decision
     let chunks
     try {
       chunks = await ctx.memory.inject({ maxChunks: resolved.maxInjectedChunks, signal })
@@ -144,6 +145,22 @@ export function renderInjectedChunks(chunks: readonly { source: string; path: st
     lines.push(`- [${index + 1}] (${chunk.source}, ${chunk.path}) ${firstLine(chunk.text)}`)
   }
   return lines.join('\n')
+}
+
+/** Return `true` when this session already received a memory snapshot.
+ *
+ * Scans the authoritative session event log for a prior `user/message` whose
+ * plugin source is `tool-memory` with `form: 'snapshot'`, so resumed sessions
+ * and later turns reuse the existing prefix instead of re-injecting.
+ * @param agent - the agent whose session log to scan.
+ * @returns `true` when a memory snapshot message already exists.
+ */
+function hasInjectedSnapshot(agent: Agent): boolean {
+  return agent.session.events.some(event =>
+    event.type === 'user/message'
+    && event.data.source.kind === 'plugin'
+    && event.data.source.plugin === 'tool-memory'
+    && event.data.source.form === 'snapshot')
 }
 
 function firstLine(text: string): string {

@@ -1,5 +1,5 @@
 /**
- * Service Definition for cross-session curated knowledge with hybrid recall.
+ * Service Definition for cross-session curated knowledge with keyword recall.
  *
  * @module @deepseek-ai/dsh-memory
  */
@@ -30,7 +30,6 @@ export {
   applyTemporalDecay,
   isContentFree,
   isEvergreenScope,
-  mergeScores,
 } from './scoring.ts'
 export {
   MemoryPath,
@@ -65,7 +64,7 @@ export abstract class MemoryService extends Service {
   }
 
   /**
-   * Search curated memory with the configured hybrid pipeline.
+   * Search curated memory with the FTS keyword pipeline.
    * @param request - query, optional scope/limit/min-score overrides, cancellation.
    * @returns ranked results with per-result mode and coverage metadata.
    */

@@ -2,9 +2,9 @@
  * Markdown-backed cross-session memory provider.
  *
  * Stores curated knowledge as editable markdown under the harness home,
- * indexes chunks with SQLite FTS5, and serves hybrid search through the
- * `ctx.memory` service. Vector retrieval is opt-in: without an embedding
- * provider the search path stays FTS-only with zero LLM or embedding calls.
+ * indexes chunks with SQLite FTS5, and serves keyword search through the
+ * `ctx.memory` service. The shipped path is FTS-only with zero LLM or
+ * embedding calls; vector retrieval is a deferred follow-up.
  *
  * @module @deepseek-ai/dsh-memory-markdown
  */
@@ -116,9 +116,6 @@ export class MarkdownMemoryService extends MemoryService {
   static Config: z<Config> = z.object({
     maxResults: z.number().step(1).min(1),
     minScore: z.number().min(0).max(1),
-    textWeight: z.number().min(0),
-    vectorWeight: z.number().min(0),
-    mmrEnabled: z.boolean(),
     temporalDecayEnabled: z.boolean(),
     halfLifeDays: z.number().min(0.000001),
     sourceWeights: z.object({}),
@@ -312,10 +309,10 @@ export class MarkdownMemoryService extends MemoryService {
   }
 
   private async _scanSessionDirectory(known: Set<string>): Promise<void> {
-    for (const { name, absolute } of await this._listSessionArchives()) {
-      known.add(absolute)
+    for (const { path, absolute } of await this._listSessionArchives()) {
+      known.add(path)
       try {
-        await this._loadFile(MemoryPath('session', 'sessions', name))
+        await this._loadFile(path)
       } catch {
         /* v8 ignore next -- a listed file can only fail to load through an I/O race */
         continue
@@ -325,7 +322,7 @@ export class MarkdownMemoryService extends MemoryService {
   }
 
   /** List the `.md` session-archive files under the sessions directory. */
-  private async _listSessionArchives(): Promise<Array<{ name: string; absolute: string }>> {
+  private async _listSessionArchives(): Promise<Array<{ path: MemoryPathValue; absolute: string }>> {
     let entries
     try {
       entries = await readdir(this._layout.sessionsDir, { withFileTypes: true })
@@ -333,15 +330,16 @@ export class MarkdownMemoryService extends MemoryService {
       /* v8 ignore next -- callers create sessionsDir before listing, so readdir cannot fail here */
       return []
     }
-    const archives: Array<{ name: string; absolute: string }> = []
+    const archives: Array<{ path: MemoryPathValue; absolute: string }> = []
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue
+      let path: MemoryPathValue
       try {
-        MemoryPath('session', 'sessions', entry.name)
+        path = MemoryPath('session', 'sessions', entry.name)
       } catch {
         continue
       }
-      archives.push({ name: entry.name, absolute: join(this._layout.sessionsDir, entry.name) })
+      archives.push({ path, absolute: join(this._layout.sessionsDir, entry.name) })
     }
     return archives
   }
@@ -367,7 +365,7 @@ export class MarkdownMemoryService extends MemoryService {
         continue
       }
       const absolute = join(directory, entry.name)
-      known.add(absolute)
+      known.add(path)
       try {
         await this._loadFile(path)
       } catch {
@@ -398,9 +396,15 @@ export class MarkdownMemoryService extends MemoryService {
     /* v8 ignore next -- every _reindex call site loads or caches the state first */
     if (state === undefined) return
     const scope = pathScope(state.path)
-    db.prepare('DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE path = ?)').run(absolute)
-    db.prepare('DELETE FROM chunks WHERE path = ?').run(absolute)
-    const createdAt = Date.now()
+    const existingCreatedAt = new Map<string, number>()
+    for (const row of db.prepare(
+      'SELECT id, created_at FROM chunks WHERE path = ?',
+    ).all(state.path) as Array<{ id: string; created_at: number }>) {
+      existingCreatedAt.set(row.id, row.created_at)
+    }
+    db.prepare('DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE path = ?)').run(state.path)
+    db.prepare('DELETE FROM chunks WHERE path = ?').run(state.path)
+    const now = Date.now()
     const chunks = chunkMarkdown(state.content, this._chunkConfig)
     const insert = db.prepare(`
       INSERT INTO chunks (id, path, start_line, end_line, text, source, access_count, created_at)
@@ -413,7 +417,8 @@ export class MarkdownMemoryService extends MemoryService {
     for (const chunk of chunks) {
       const id = chunkHashOf(chunk.text)
       const text = chunk.text
-      insert.run(id, absolute, chunk.startLine, chunk.endLine, text, scope, createdAt)
+      const createdAt = existingCreatedAt.get(id) ?? now
+      insert.run(id, state.path, chunk.startLine, chunk.endLine, text, scope, createdAt)
       insertFts.run(text, id, scope)
     }
   }
@@ -460,7 +465,7 @@ export class MarkdownMemoryService extends MemoryService {
   }
 
   private async _collectSessionFiles(files: MemoryFile[]): Promise<void> {
-    for (const { name, absolute } of await this._listSessionArchives()) {
+    for (const { path, absolute } of await this._listSessionArchives()) {
       let info
       try {
         info = await stat(absolute)
@@ -469,7 +474,7 @@ export class MarkdownMemoryService extends MemoryService {
         continue
       }
       files.push({
-        path: MemoryPath('session', 'sessions', name),
+        path,
         scope: 'session',
         sizeBytes: info.size,
         modifiedAt: info.mtimeMs,

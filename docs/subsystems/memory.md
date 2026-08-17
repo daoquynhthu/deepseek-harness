@@ -2,7 +2,7 @@
 
 English | [中文](memory.zh.md)
 
-The cross-session curated-memory capability — a [capability seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md) that persists knowledge an agent chooses to remember across sessions and surfaces it back through hybrid recall, split across packages: Service Definition ([dsh-memory](../../packages/memory/memory), `ctx.memory`), Service Provider ([dsh-memory-markdown](../../packages/memory/memory-markdown), markdown files under the harness home with an SQLite FTS5 index), and Consumer ([dsh-tool-memory](../../packages/memory/tool-memory), the `memory_search`/`memory_get`/`memory_set` tools and session-start injection). Memory is **one optional capability**, not part of the agent-loop spine — so its vocabulary lives here, not in [core.md](core.md).
+The cross-session curated-memory capability — a [capability seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md) that persists knowledge an agent chooses to remember across sessions and surfaces it back through keyword recall, split across packages: Service Definition ([dsh-memory](../../packages/memory/memory), `ctx.memory`), Service Provider ([dsh-memory-markdown](../../packages/memory/memory-markdown), markdown files under the harness home with an SQLite FTS5 index), and Consumer ([dsh-tool-memory](../../packages/memory/tool-memory), the `memory_search`/`memory_get`/`memory_set` tools and session-start injection). Memory is **one optional capability**, not part of the agent-loop spine — so its vocabulary lives here, not in [core.md](core.md).
 
 Source: [`packages/memory/memory/src/index.ts`](../../packages/memory/memory/src/index.ts)
 
@@ -22,7 +22,7 @@ type MemoryPath = Branded<'MemoryPath'>
 
 ## Chunking and indexing
 
-Files are split into chunks that respect markdown structure — headers, paragraphs, and code blocks — and each chunk carries the active header stack as context for self-containment. A deterministic content hash identifies a chunk across reindexes of unchanged text; a chunk records its 0-based start and exclusive end lines in the source file. The provider stores chunks in a dedicated SQLite index whose schema version and application id protect it from unrelated databases, and indexes the chunk text with a contentless FTS5 table. Vector retrieval is opt-in and never imported in FTS-only operation, so a deployment without an embedding provider performs zero LLM or embedding calls.
+Files are split into chunks that respect markdown structure — headers, paragraphs, and code blocks — and each chunk carries the active header stack as context for self-containment. A deterministic content hash identifies a chunk across reindexes of unchanged text; a chunk records its 0-based start and exclusive end lines in the source file. The provider stores chunks in a dedicated SQLite index whose schema version and application id protect it from unrelated databases, and indexes the chunk text with a contentless FTS5 table. The shipped recall path is FTS-only and never imports a vector extension, so a deployment performs zero LLM or embedding calls; vector retrieval is a deferred follow-up.
 
 ```ts type-equiv
 /** One indexed chunk of a memory file. */
@@ -90,7 +90,7 @@ Search, read, write, and list are backend-independent concrete contracts; a back
 
 ```ts cordis-catalog
 /**
- * Search curated memory with the configured hybrid pipeline.
+ * Search curated memory with the FTS keyword pipeline.
  * @param request - query, optional scope/limit/min-score overrides, cancellation.
  * @returns ranked results with per-result mode and coverage metadata.
  */
@@ -133,5 +133,5 @@ abstract readChunks(path: MemoryPath): Promise<readonly MemoryChunk[]>
 abstract inject(request: MemoryInjectRequest): Promise<readonly MemoryChunk[]>
 ```
 
-Source: [`packages/memory/memory/src/index.ts:56`](../../packages/memory/memory/src/index.ts)
+Source: [`packages/memory/memory/src/index.ts:55`](../../packages/memory/memory/src/index.ts)
 <!-- END GENERATED cordis-surface -->

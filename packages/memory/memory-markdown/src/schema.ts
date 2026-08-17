@@ -2,9 +2,9 @@
  * SQLite schema for the memory chunk index.
  *
  * The index stores chunked text from memory files: a `chunks` table for
- * structured metadata, a contentless FTS5 virtual table for BM25 keyword
- * search, and an optional `chunks_vec` vec0 table for vector similarity.
- * FTS-only operation never imports the vector extension.
+ * structured metadata and a contentless FTS5 virtual table for BM25 keyword
+ * search. The optional `chunks_vec` vec0 table for vector similarity is a
+ * deferred follow-up; FTS-only operation never imports the vector extension.
  *
  * @module @deepseek-ai/dsh-memory-markdown
  */

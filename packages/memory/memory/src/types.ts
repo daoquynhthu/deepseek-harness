@@ -15,7 +15,8 @@ export type MemoryPath = Branded<'MemoryPath'>
 /** Curated-memory scope; `session` chunks decay, evergreen scopes do not. */
 export type MemoryScope = 'global' | 'workspace' | 'session'
 
-/** Retrieval mode selected by the search pipeline. */
+/** Retrieval mode selected by the search pipeline; the shipped FTS path emits `fts-only`, and the deferred vector
+ * path would emit the others. */
 export type MemoryRetrievalMode = 'fts-only' | 'hybrid' | 'embedding-fallback'
 
 /** One indexed chunk of a memory file. */
@@ -44,12 +45,6 @@ export interface MemorySearchConfig {
   readonly maxResults: number
   /** Minimum accepted score; lower-scoring chunks are dropped. */
   readonly minScore: number
-  /** FTS keyword weight in the merged score. */
-  readonly textWeight: number
-  /** Vector similarity weight in the merged score; unused in FTS-only mode. */
-  readonly vectorWeight: number
-  /** Apply MMR diversity re-ranking when enabled. */
-  readonly mmrEnabled: boolean
   /** Temporal decay settings for session chunks. */
   readonly temporalDecay: TemporalDecayConfig
   /** Per-scope score weights. */

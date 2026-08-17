@@ -64,6 +64,7 @@ export interface IndexedChunkRow {
 /** Result of one keyword scan. */
 export interface KeywordScan {
   readonly rows: readonly IndexedChunkRow[]
+  /** Total matched chunk count before the result cap. */
   readonly total: number
   readonly matches: readonly string[]
 }
@@ -71,8 +72,8 @@ export interface KeywordScan {
 /**
  * Run an FTS5 keyword scan over the chunk index.
  *
- * FTS-only mode calls this directly with the extracted keywords; hybrid mode
- * merges its vector results with these rows. When no keywords survive stop-word
+ * FTS-only mode calls this directly with the extracted keywords; a deferred
+ * vector path would merge its results with these rows. When no keywords survive stop-word
  * filtering, the scan matches nothing and returns an empty result.
  * @param db - open memory index handle.
  * @param keywords - extracted query keywords.
@@ -106,9 +107,15 @@ export function keywordScan(
     ORDER BY rank
     LIMIT ?
   `).all(...params, limit + 1) as unknown as IndexedChunkRow[]
+  const total = (db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM chunks_fts
+    JOIN chunks AS c ON c.id = chunks_fts.id
+    WHERE ${whereSql}
+  `).get(...params) as { count: number }).count
   return {
     rows: rows.slice(0, limit),
-    total: rows.length > limit ? limit : rows.length,
+    total,
     matches: keywords,
   }
 }
