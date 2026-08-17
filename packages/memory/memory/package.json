@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-memory",
   "description": "Cross-session memory service contract with curated knowledge search, read, and write",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0-rc.7",
   "publishConfig": {
     "access": "public"
   },
