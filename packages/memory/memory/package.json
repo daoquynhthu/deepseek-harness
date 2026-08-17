@@ -23,8 +23,7 @@
       "default": "./lib/invariant.js"
     },
     "./types": {
-      "types": "./lib/types/types.d.ts",
-      "default": "./lib/types.js"
+      "types": "./lib/types/types.d.ts"
     },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
