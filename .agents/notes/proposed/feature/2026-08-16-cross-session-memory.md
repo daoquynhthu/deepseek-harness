@@ -8,7 +8,7 @@ English | [中文](2026-08-16-cross-session-memory.zh.md)
 
 An agent that only reads its own session log starts from zero in every fresh session. A developer resumes a project across weeks and sessions: conventions, decisions, dependency facts, and project layout live scattered across prior `session_query`-reachable logs, but nothing curates them, nothing surfaces them at session start, and nothing distinguishes "what happened before" from "what this project is". The model must re-derive durable facts from raw transcripts or re-learn them by asking.
 
-The existing seams do not cover this gap. `session_query` (and its `tool-session-query` consumer) retrieves raw session events: full-text search over the conversation record, with no curation, no hierarchy, and no priority. It is the transcript, not the knowledge. Third-party memory MCP servers (the [third-party-memory-mcp-examples](../feature/2026-07-31-third-party-memory-mcp-examples.md) boundary) push storage, curation, models, and embeddings upstream and are explicitly out of product scope. `recallable-compaction` (in-session recall) is proposed and complementary, but it is scoped to one live session's shadowed spans, not cross-session knowledge. Nothing ships a product-owned, cross-session knowledge layer.
+The existing seams do not cover this gap. `session_query` (and its `tool-session-query` consumer) retrieves raw session events: full-text search over the conversation record, with no curation, no hierarchy, and no priority. It is the transcript, not the knowledge. Third-party memory MCP servers (the [third-party-memory-mcp-examples](../../implemented/feature/2026-07-31-third-party-memory-mcp-examples.md) boundary) push storage, curation, models, and embeddings upstream and are explicitly out of product scope. `recallable-compaction` (in-session recall) is proposed and complementary, but it is scoped to one live session's shadowed spans, not cross-session knowledge. Nothing ships a product-owned, cross-session knowledge layer.
 
 Grok's memory system (`xai-grok-memory`) is the mature reference: markdown storage under `~/.grok/memory/` with global and per-workspace `MEMORY.md` plus archived session logs, a SQLite index with FTS5 keyword search and optional vector KNN, hybrid scoring with temporal decay and source weighting, initial injection at session start plus model-facing search tools, a file watcher for external edits, and a background dream consolidation. DSH has the SQLite, tool, and injection plumbing it needs; it lacks only the memory layer itself.
 
@@ -101,7 +101,7 @@ Deployment-varying choices are validated `Config` fields, per the no-hardcoded-t
 - `@deepseek-ai/dsh-tool-memory` — Consumer: `memory_search`, `memory_get`, `memory_set` tools plus the prompt section.
 - Optional `@deepseek-ai/dsh-memory-embedding-http` — an OpenAI-compatible embeddings provider over `dsh-llm` conventions, never shipped in defaults.
 
-The seam follows the [capability-seam pattern](../implemented/architecture/2026-06-13-capability-seams.md): Definition, Provider, Consumer roles each exist; no role is skipped. The service registers through `ctx.effect()` with HMR-safe disposal.
+The seam follows the [capability-seam pattern](../../implemented/architecture/2026-06-13-capability-seams.md): Definition, Provider, Consumer roles each exist; no role is skipped. The service registers through `ctx.effect()` with HMR-safe disposal.
 
 ### Follow-ups
 
@@ -115,7 +115,7 @@ Deferred until observation calls for them:
 ## Alternatives considered
 
 - **Rely on `tool-session-query` alone** — rejected: it searches raw transcripts with no curation, hierarchy, priority, or injection; the model must know what to search and re-derive knowledge from logs every session.
-- **Rely on third-party MCP memory servers** — rejected: the [third-party-memory-mcp-examples](../feature/2026-07-31-third-party-memory-mcp-examples.md) decision explicitly keeps account, model, embedding, storage, and curation upstream; a product-owned knowledge layer needs first-party semantics and an off-by-default embedded default.
+- **Rely on third-party MCP memory servers** — rejected: the [third-party-memory-mcp-examples](../../implemented/feature/2026-07-31-third-party-memory-mcp-examples.md) decision explicitly keeps account, model, embedding, storage, and curation upstream; a product-owned knowledge layer needs first-party semantics and an off-by-default embedded default.
 - **Vector-first search, embeddings default-on** — rejected: DeepSeek exposes no embeddings endpoint, so hybrid cannot be the default; FTS-only as the keyless, dependency-free floor is the honest default, with vector as configuration.
 - **Full session logs into memory** — rejected: the transcript already lives in the session log and is reachable via `session_query`; duplicating it pollutes curated knowledge with noise and unbounded growth.
 - **Model-authored arbitrary memory files** — rejected: unbounded write authority risks a model littering the home with ad-hoc files; writes stay scoped to known paths (`MEMORY.md`, session archives) with a narrow `memory_set` surface.

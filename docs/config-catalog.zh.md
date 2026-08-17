@@ -1279,6 +1279,45 @@ export interface ReconnectConfig {
 
 来源：[`packages/mcp/mcp-client/src/index.ts:98`](../packages/mcp/mcp-client/src/index.ts)
 
+<a id="deepseek-aidsh-memory-markdown"></a>
+
+## `@deepseek-ai/dsh-memory-markdown`
+
+```ts config-catalog
+/** Markdown memory provider configuration. */
+export interface Config extends MemoryConfig {
+  /** Index and chunk configuration. */
+  index?: {
+    /** Maximum chunk size in characters. Defaults to 800. */
+    maxChunkChars?: number
+    /** Overlap in characters between continuation chunks. Defaults to 120. */
+    chunkOverlapChars?: number
+  }
+  /** Open the SQLite module and handle at activation or the first search, or `never`. */
+  openAt?: MemoryOpenAt
+  /** SQLite journal mode. Defaults to `wal`. */
+  journalMode?: JournalMode
+  /** Explicit memory root; defaults to `{dshHome}/memory`. */
+  root?: string
+  /** Workspace path used to derive the workspace memory directory. */
+  workspace?: string
+  /** Explicit harness home override passed to `resolveDshHome`. */
+  dshHome?: string
+  /** Memory index database path; defaults to `{root}/index.sqlite`. */
+  path?: string
+}
+
+/** Open-phase for the SQLite memory index. */
+export type MemoryOpenAt = 'startup' | 'first-search' | 'never'
+
+/** Supported SQLite journal modes. */
+export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
+```
+
+Depends on: [`MemoryConfig`](../packages/memory/memory/src/index.ts)
+
+来源：[`packages/memory/memory-markdown/src/index.ts:72`](../packages/memory/memory-markdown/src/index.ts)
+
 <a id="deepseek-aidsh-message-feedback"></a>
 
 ## `@deepseek-ai/dsh-message-feedback`
@@ -2501,6 +2540,24 @@ export interface Config {
 
 来源：[`packages/lsp/tool-lsp/src/index.ts:58`](../packages/lsp/tool-lsp/src/index.ts)
 
+<a id="deepseek-aidsh-tool-memory"></a>
+
+## `@deepseek-ai/dsh-tool-memory`
+
+需要：`tools` · `systemPrompt` · `memory`
+
+```ts config-catalog
+/** Deployment-owned memory tool bounds. */
+export interface Config {
+  /** Maximum hits returned by one `memory_search` call. Defaults to 10. */
+  maxSearchResults?: number
+  /** Number of top evergreen chunks injected at session start. Defaults to 5. */
+  maxInjectedChunks?: number
+}
+```
+
+来源：[`packages/memory/tool-memory/src/index.ts:45`](../packages/memory/tool-memory/src/index.ts)
+
 <a id="deepseek-aidsh-tool-pwsh"></a>
 
 ## `@deepseek-ai/dsh-tool-pwsh`
@@ -3104,6 +3161,7 @@ export interface Config {
 - `@deepseek-ai/dsh-fs` — 抽象 `FileSystem`（[`packages/fs/fs/src/index.ts`](../packages/fs/fs/src/index.ts)）
 - `@deepseek-ai/dsh-host-directory-picker` — 抽象 `DirectoryPicker`（[`packages/host/directory-picker/src/index.ts`](../packages/host/directory-picker/src/index.ts)）
 - `@deepseek-ai/dsh-jobs` — 抽象 `JobRegistry`（[`packages/jobs/jobs/src/index.ts`](../packages/jobs/jobs/src/index.ts)）
+- `@deepseek-ai/dsh-memory` — 抽象 `MemoryService`（[`packages/memory/memory/src/index.ts`](../packages/memory/memory/src/index.ts)）
 - `@deepseek-ai/dsh-sandbox` — 抽象 `SandboxProvider`（[`packages/sandbox/sandbox/src/index.ts`](../packages/sandbox/sandbox/src/index.ts)）
 - `@deepseek-ai/dsh-session-persistence` — 抽象 `SessionPersistence`（[`packages/session/session-persistence/src/index.ts`](../packages/session/session-persistence/src/index.ts)）
 - `@deepseek-ai/dsh-session-query` — 抽象 `SessionQueryEngine`（[`packages/session-query/session-query/src/index.ts`](../packages/session-query/session-query/src/index.ts)）

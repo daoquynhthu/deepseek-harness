@@ -8,7 +8,7 @@ Status: proposed
 
 只读自己会话日志的 agent 在每个全新会话里都从零开始。开发者会跨数周、跨多次会话继续一个项目：约定、决策、依赖事实、项目结构散落在之前 `session_query` 可达的日志里，但没有任何东西策展它们、在会话开始时浮出它们、区分"之前发生了什么"与"这个项目是什么"。模型必须从原始 transcript 重新推导持久事实，或靠提问重新学习。
 
-现有 seam 不覆盖这一缺口。`session_query`（及其 `tool-session-query` consumer）检索的是原始会话事件：对对话记录的全文搜索，没有策展、没有层级、没有优先级。它是 transcript，不是知识。第三方记忆 MCP 服务器（[third-party-memory-mcp-examples](../feature/2026-07-31-third-party-memory-mcp-examples.md) 边界）把存储、策展、模型、嵌入都推给上游，明确不在产品范围。`recallable-compaction`（会话内召回）是已提议且互补的，但它限定于一个活跃会话的 shadowed spans，不是跨会话知识。没有任何东西提供一个产品自有的、跨会话的知识层。
+现有 seam 不覆盖这一缺口。`session_query`（及其 `tool-session-query` consumer）检索的是原始会话事件：对对话记录的全文搜索，没有策展、没有层级、没有优先级。它是 transcript，不是知识。第三方记忆 MCP 服务器（[third-party-memory-mcp-examples](../../implemented/feature/2026-07-31-third-party-memory-mcp-examples.md) 边界）把存储、策展、模型、嵌入都推给上游，明确不在产品范围。`recallable-compaction`（会话内召回）是已提议且互补的，但它限定于一个活跃会话的 shadowed spans，不是跨会话知识。没有任何东西提供一个产品自有的、跨会话的知识层。
 
 Grok 的记忆系统（`xai-grok-memory`）是成熟参照：`~/.grok/memory/` 下的 markdown 存储，含全局与每工作区 `MEMORY.md` 及归档会话日志；SQLite 索引，含 FTS5 关键词搜索与可选向量 KNN；带时间衰减与源权重的混合评分；会话开始的初始注入加模型可用的搜索工具；监听外部编辑的文件 watcher；后台 dream 整合。DSH 已具备所需的 SQLite、工具与注入管道；唯独缺记忆层本身。
 
@@ -101,7 +101,7 @@ memory:
 - `@deepseek-ai/dsh-tool-memory` — Consumer：`memory_search`、`memory_get`、`memory_set` 工具加提示段落。
 - 可选 `@deepseek-ai/dsh-memory-embedding-http` — 按 `dsh-llm` 约定的 OpenAI 兼容 embeddings provider，永不随默认发布。
 
-seam 遵循 [capability-seam pattern](../implemented/architecture/2026-06-13-capability-seams.md)：Definition、Provider、Consumer 角色各自存在，无角色缺失。服务经 `ctx.effect()` 注册，带 HMR 安全销毁。
+seam 遵循 [capability-seam pattern](../../implemented/architecture/2026-06-13-capability-seams.md)：Definition、Provider、Consumer 角色各自存在，无角色缺失。服务经 `ctx.effect()` 注册，带 HMR 安全销毁。
 
 ### 后续
 
@@ -115,7 +115,7 @@ seam 遵循 [capability-seam pattern](../implemented/architecture/2026-06-13-cap
 ## 备选方案
 
 - **仅依赖 `tool-session-query`** — 否决：它搜索的是无策展、无层级、无优先级、无注入的原始 transcript；模型必须知道搜什么并每会话从日志重推知识。
-- **依赖第三方 MCP 记忆服务器** — 否决：[third-party-memory-mcp-examples](../feature/2026-07-31-third-party-memory-mcp-examples.md) 决策明确把 account、model、embedding、storage、策展留在上游；产品自有的知识层需要一方语义和默认关闭的内嵌默认。
+- **依赖第三方 MCP 记忆服务器** — 否决：[third-party-memory-mcp-examples](../../implemented/feature/2026-07-31-third-party-memory-mcp-examples.md) 决策明确把 account、model、embedding、storage、策展留在上游；产品自有的知识层需要一方语义和默认关闭的内嵌默认。
 - **向量优先搜索、embedding 默认开** — 否决：DeepSeek 无 embeddings 端点，因此 hybrid 不能是默认；FTS-only 作为 keyless、零依赖的地板才是诚实默认，向量是配置。
 - **把完整会话日志放进记忆** — 否决：transcript 已在会话日志中且可经 `session_query` 到达；重复它会以噪声与无界增长污染策展知识。
 - **模型可写任意记忆文件** — 否决：无界写权限有模型往 home 撒临时文件的风险；写入限定到已知路径（`MEMORY.md`、会话归档），以窄 `memory_set` 表面。

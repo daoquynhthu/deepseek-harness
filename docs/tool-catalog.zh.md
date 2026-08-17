@@ -41,6 +41,7 @@
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
+| `@deepseek-ai/dsh-tool-memory` | `memory_get`、`memory_search`、`memory_set` | `ctx.tools`、`ctx.memory`、`ctx.systemPrompt`、`a calling Agent for the session-bound tools` | `tool/call`、`tool/result`、`memory files + the SQLite chunk index (memory_set)`、`a "Project memory" user message (session-start injection)` | - | memory_search、memory_get 和 memory_set 是策展记忆 seam 的面向模型消费方；memory_set 还会重新索引被写入的文件。同一包会在每次会话开始注入最多 `maxInjectedChunks` 个常青分块作为 "Project memory" 快照。 |
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 
@@ -1876,3 +1877,90 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 来源：[`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
 web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。
+
+<a id="deepseek-aidsh-tool-memory"></a>
+
+## `@deepseek-ai/dsh-tool-memory`
+
+### `memory_get`
+
+完整读取一个记忆文件，例如 MEMORY.md 或某个会话归档。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Memory file path, for example MEMORY.md or sessions/2026-08-16-summary-a1b2c3d4.md."
+    }
+  },
+  "required": [
+    "path"
+  ]
+}
+```
+
+来源：[`packages/memory/tool-memory/src/operations.ts`](../packages/memory/tool-memory/src/operations.ts)
+
+### `memory_search`
+
+检索策展的跨会话记忆，并返回最强的匹配知识分块。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Free-text query over curated memory chunks."
+    },
+    "scope": {
+      "type": "string",
+      "description": "Restrict results to one memory scope. Omit to search all scopes.",
+      "enum": [
+        "global",
+        "workspace",
+        "session"
+      ]
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Maximum results. Defaults to the deployment configuration."
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
+```
+
+来源：[`packages/memory/tool-memory/src/index.ts`](../packages/memory/tool-memory/src/index.ts)
+
+### `memory_set`
+
+以完整 markdown 内容写入一个记忆文件，替换已有内容。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Memory file path: MEMORY.md (global) or workspace/MEMORY.md (workspace)."
+    },
+    "content": {
+      "type": "string",
+      "description": "Full markdown content to write, replacing existing content."
+    }
+  },
+  "required": [
+    "path",
+    "content"
+  ]
+}
+```
+
+来源：[`packages/memory/tool-memory/src/operations.ts`](../packages/memory/tool-memory/src/operations.ts)
+
+memory_search、memory_get 和 memory_set 是策展记忆 seam 的面向模型消费方；memory_set 还会重新索引被写入的文件。同一包会在每次会话开始注入最多 `maxInjectedChunks` 个常青分块作为 "Project memory" 快照。

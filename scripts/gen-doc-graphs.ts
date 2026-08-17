@@ -497,6 +497,15 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'The backend saves oversized tool text and returns a model-facing locator plus retrieval hint; spill-policy is the tools/post-execute consumer that decides when to spill.',
   },
   {
+    key: 'memory',
+    pkg: 'memory',
+    title: 'Curated-memory seam',
+    mode: 'seam',
+    implementations: ['memory-markdown'],
+    consumers: ['tool-memory'],
+    note: 'The provider persists curated knowledge as indexed markdown under the harness home and serves hybrid recall; tool-memory is the model-facing consumer with memory_search/get/set plus session-start injection.',
+  },
+  {
     key: 'directoryPicker',
     pkg: 'directory-picker',
     title: 'Workspace-directory picking seam',

@@ -1,6 +1,7 @@
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -47,6 +48,10 @@ const ralphScenarioDir = join(snapshotsDir, 'ralph-loop')
 const ralphConfigPath = fileURLToPath(new URL('../ralph.cordis.snapshot.yml', import.meta.url))
 const settlementScenarioDir = join(snapshotsDir, 'subagent-settlement')
 const settlementConfigPath = fileURLToPath(new URL('../subagent-settlement.cordis.snapshot.yml', import.meta.url))
+const memoryScenarioDir = join(snapshotsDir, 'memory-persist')
+const memoryWriteStreamExpected = join(memoryScenarioDir, 'write.stream-json.expected.jsonl')
+const memorySearchStreamExpected = join(memoryScenarioDir, 'search.stream-json.expected.jsonl')
+const memoryConfigPath = fileURLToPath(new URL('../memory.cordis.snapshot.yml', import.meta.url))
 const startupFailureConfigPath = fileURLToPath(new URL('./fixtures/startup-activation-error/cordis.yml', import.meta.url))
 const startupFailureExpected = join(snapshotsDir, 'startup-activation-error', 'stderr.expected.txt')
 const binScript = fileURLToPath(new URL('./fixtures/headless-driver.ts', import.meta.url))
@@ -126,7 +131,7 @@ function contextFromLogs(contents: readonly string[]): NormalizeContext {
   }
 }
 
-function normalizeHeadlessStream(rawStdout: string, cwd: string): string {
+function normalizeHeadlessStream(rawStdout: string, cwd: string, cwdAliases: string[] = []): string {
   const records = parseJsonl(rawStdout)
   if (records.length === 0) throw new Error('headless snapshot emitted no stream-json records')
   const final = records.at(-1)
@@ -137,7 +142,7 @@ function normalizeHeadlessStream(rawStdout: string, cwd: string): string {
 
   const sessionIds = [...new Set(records.flatMap(record => typeof record.sessionId === 'string' ? [record.sessionId] : []))]
   if (sessionIds.length !== 1) throw new Error(`headless snapshot streamed ${sessionIds.length} main session ids`)
-  const context: NormalizeContext = { sessionIds, cwd }
+  const context: NormalizeContext = { sessionIds, cwd, cwdAliases }
   const events = records.slice(0, -1).map((record) => {
     if (record.event === null || typeof record.event !== 'object' || Array.isArray(record.event)) {
       throw new Error('headless snapshot emitted an invalid session event')
@@ -901,4 +906,100 @@ describe('headless stream-json snapshots', () => {
     if (refreshing) await writeFile(ptyStreamExpected, normalized)
     expect(normalized).toBe(await readFile(ptyStreamExpected, 'utf8'))
   }, LOADER_SMOKE_TEST_TIMEOUT_MS)
+
+  it('persists curated memory across fresh sessions', async () => {
+    const input = JSON.parse(await readFile(join(memoryScenarioDir, 'input.json'), 'utf8')) as {
+      steps?: { op?: unknown; text?: unknown }[]
+    }
+    const prompts = input.steps?.filter(step => step.op === 'prompt').map(step => step.text)
+    const writePrompt = prompts?.[0]
+    const searchPrompt = prompts?.[1]
+    if (typeof writePrompt !== 'string' || typeof searchPrompt !== 'string') {
+      throw new Error('memory-persist input has no two prompt steps')
+    }
+    // The memory root defaults to `$DSH_HOME/memory`; both runs resolve it to
+    // this shared temp home so the second fresh session sees the first write.
+    const sharedHome = await mkdtemp(join(tmpdir(), 'dsh-snapshot-memory-'))
+    try {
+      let writeCwd = ''
+      const writeResult = await runLoaderSmoke({
+        label: 'memory write headless stream-json snapshot',
+        tempDirPrefix: 'headless-snapshot-memory-write-',
+        binScript,
+        libBinScript: binScript,
+        configPath: memoryConfigPath,
+        binArgs: [memoryConfigPath, writePrompt],
+        tsconfigPath,
+        env: {
+          DSH_HOME: sharedHome,
+          DSH_SNAPSHOT: 'replay',
+          DSH_SNAPSHOT_FILE: join(memoryScenarioDir, 'session.jsonl'),
+          DSH_SNAPSHOT_OVERRIDE: join(memoryScenarioDir, 'write.override.json'),
+          NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        },
+        prepare: (cwd) => { writeCwd = cwd },
+        inspect: async (cwd) => {
+          const logs = await persistedLogs(cwd)
+          expect(logs).toHaveLength(1)
+          const records = parseJsonl(logs[0]?.content ?? '')
+          const calls = records.filter(record => record.type === 'tool/call')
+            .map(record => (record.data as JsonObject | undefined)?.name)
+          expect(calls).toEqual(['memory_set'])
+          expect(await readFile(join(sharedHome, 'memory', 'MEMORY.md'), 'utf8'))
+            .toContain('Deployment convention: run the release checklist in CI, never locally.')
+        },
+      })
+
+      expect(writeResult.stderr).toBe('')
+      const writeNormalized = normalizeHeadlessStream(writeResult.stdout, writeCwd, [sharedHome])
+      if (refreshing) await writeFile(memoryWriteStreamExpected, writeNormalized)
+      expect(writeNormalized).toBe(await readFile(memoryWriteStreamExpected, 'utf8'))
+
+      let searchCwd = ''
+      const searchResult = await runLoaderSmoke({
+        label: 'memory search headless stream-json snapshot',
+        tempDirPrefix: 'headless-snapshot-memory-search-',
+        binScript,
+        libBinScript: binScript,
+        configPath: memoryConfigPath,
+        binArgs: [memoryConfigPath, searchPrompt],
+        tsconfigPath,
+        env: {
+          DSH_HOME: sharedHome,
+          DSH_SNAPSHOT: 'replay',
+          DSH_SNAPSHOT_FILE: join(memoryScenarioDir, 'session.jsonl'),
+          DSH_SNAPSHOT_OVERRIDE: join(memoryScenarioDir, 'search.override.json'),
+          NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        },
+        prepare: (cwd) => { searchCwd = cwd },
+        inspect: async (cwd) => {
+          const logs = await persistedLogs(cwd)
+          expect(logs).toHaveLength(1)
+          const records = parseJsonl(logs[0]?.content ?? '')
+          const injected = records.find((record) => {
+            if (record.type !== 'user/message') return false
+            const message = record.data as JsonObject | undefined
+            const source = message?.source as JsonObject | undefined
+            const sections = source?.sections as JsonObject[] | undefined
+            return sections?.[0]?.name === 'Project memory'
+          })
+          expect(injected).toBeDefined()
+          const calls = records.filter(record => record.type === 'tool/call')
+            .map(record => (record.data as JsonObject | undefined)?.name)
+          expect(calls).toEqual(['memory_search'])
+          const searchResultRecord = records.find(record => record.type === 'tool/result')
+          expect(JSON.stringify(searchResultRecord?.data)).toContain(
+            'Deployment convention: run the release checklist in CI, never locally.',
+          )
+        },
+      })
+
+      expect(searchResult.stderr).toBe('')
+      const searchNormalized = normalizeHeadlessStream(searchResult.stdout, searchCwd, [sharedHome])
+      if (refreshing) await writeFile(memorySearchStreamExpected, searchNormalized)
+      expect(searchNormalized).toBe(await readFile(memorySearchStreamExpected, 'utf8'))
+    } finally {
+      await rm(sharedHome, { recursive: true, force: true })
+    }
+  }, 2 * LOADER_SMOKE_TEST_TIMEOUT_MS)
 })

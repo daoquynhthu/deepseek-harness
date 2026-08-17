@@ -59,6 +59,8 @@ import * as ToolSessionQuery from '@deepseek-ai/dsh-tool-session-query'
 import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
 import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
+import MarkdownMemoryService from '@deepseek-ai/dsh-memory-markdown'
+import * as ToolMemory from '@deepseek-ai/dsh-tool-memory'
 import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
 import VmWorkflowEngine from '@deepseek-ai/dsh-workflow-worker-thread'
 import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
@@ -550,6 +552,29 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-memory',
+    dir: 'tool-memory',
+    source: {
+      memory_search: 'packages/memory/tool-memory/src/index.ts',
+      memory_get: 'packages/memory/tool-memory/src/operations.ts',
+      memory_set: 'packages/memory/tool-memory/src/operations.ts',
+    },
+    requires: ['ctx.tools', 'ctx.memory', 'ctx.systemPrompt', 'a calling Agent for the session-bound tools'],
+    writes: ['tool/call', 'tool/result', 'memory files + the SQLite chunk index (memory_set)', 'a "Project memory" user message (session-start injection)'],
+    async mount(ctx) {
+      // The tool injects `memory`; mount the markdown provider in memory-index
+      // only mode so the three tool schemas register without touching disk.
+      await ctx.plugin(MarkdownMemoryService, {
+        workspace: 'tool-catalog-memory',
+        path: ':memory:',
+        openAt: 'never',
+      })
+      await ctx.plugin(ToolMemory)
+    },
+    note:
+      'memory_search, memory_get, and memory_set are the model-facing consumer of the curated-memory seam; memory_set additionally reindexes the written file. The same package injects up to `maxInjectedChunks` evergreen chunks into each session start as a "Project memory" snapshot.',
   },
 ]
 

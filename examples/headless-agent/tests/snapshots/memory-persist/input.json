@@ -1,0 +1,12 @@
+{
+  "steps": [
+    {
+      "op": "prompt",
+      "text": "Persist the deployment convention to curated project memory: run the release checklist in CI, never locally."
+    },
+    {
+      "op": "prompt",
+      "text": "What deployment convention does curated project memory record?"
+    }
+  ]
+}
