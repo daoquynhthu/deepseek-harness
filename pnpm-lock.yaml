@@ -5549,6 +5549,9 @@ importers:
       '@deepseek-ai/dsh-memory':
         specifier: workspace:^
         version: link:../memory
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
 
   packages/memory/tool-memory:
     dependencies:

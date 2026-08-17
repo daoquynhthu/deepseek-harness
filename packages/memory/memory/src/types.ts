@@ -49,6 +49,8 @@ export interface MemorySearchConfig {
   readonly temporalDecay: TemporalDecayConfig
   /** Per-scope score weights. */
   readonly sourceWeights: Readonly<Record<MemoryScope, number>>
+  /** Candidate-window multiplier applied to the result cap before content-free filtering. */
+  readonly candidateMultiplier: number
 }
 
 /** Temporal decay settings applied to session chunks. */

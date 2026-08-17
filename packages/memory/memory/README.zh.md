@@ -40,10 +40,11 @@
 | `temporalDecayEnabled` | `true` | 启用时对 `session` 分块应用指数衰减。 |
 | `halfLifeDays` | `30` | 半衰期（天）；`lambda = ln(2) / halfLifeDays`。 |
 | `sourceWeights` | `{ global: 1, workspace: 1, session: 1 }` | 各作用域分数权重。 |
+| `candidateMultiplier` | `3` | 结果上限的放大倍数，用于在过滤无内容分块前划定 FTS 候选窗口大小。 |
 
 ## 评分管线
 
-合并分数由 FTS 位置基数经共享的 `scoring.ts` 助手计算：常青作用域（`global`、`workspace`）保留基础分数，`session` 分块按配置的半衰期随年龄指数衰减，各作用域权重缩放结果，访问频率加成（封顶 0.2）奖励出现在召回中的分块。分数被限制在 `[0, 1]`。无内容分块——结构性为空或常青样板脚手架——绝不会出现在结果或注入中。
+合并分数由 FTS 位置基数经共享的 `scoring.ts` 助手计算：常青作用域（`global`、`workspace`）保留基础分数，`session` 分块按配置的半衰期随年龄指数衰减，各作用域权重缩放结果，访问频率加成（封顶 0.2）奖励出现在召回中的分块。分数被限制在 `[0, 1]`。无内容分块——结构性为空或常青样板脚手架——绝不会出现在结果或注入中。后端先取最多 `limit * candidateMultiplier` 条候选行、丢弃无内容匹配，再对幸存的内容分块计算位置基数，使脚手架不会在结果上限内挤掉真实匹配。
 
 ## 错误
 

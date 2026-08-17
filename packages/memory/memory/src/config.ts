@@ -12,6 +12,8 @@ export const MEMORY_DEFAULT_MAX_RESULTS = 10
 export const MEMORY_DEFAULT_MIN_SCORE = 0.1
 /** Default temporal decay half-life in days. */
 export const MEMORY_DEFAULT_HALF_LIFE_DAYS = 30
+/** Default candidate-window multiplier applied to the result cap before content-free filtering. */
+export const MEMORY_DEFAULT_CANDIDATE_MULTIPLIER = 3
 
 /** Closed set of memory scopes for configuration validation. */
 const MEMORY_SCOPES: readonly MemoryScope[] = ['global', 'workspace', 'session']
@@ -28,6 +30,8 @@ export interface Config {
   halfLifeDays?: number
   /** Per-scope score weights. */
   sourceWeights?: Partial<Record<MemoryScope, number>>
+  /** Candidate-window multiplier applied to the result cap before content-free filtering. Defaults to 3. */
+  candidateMultiplier?: number
 }
 
 /** Memory service error codes. */
@@ -80,6 +84,13 @@ export class MemoryServiceConfig {
         'MEMORY_INVALID_CONFIG',
       )
     }
+    const candidateMultiplier = config.candidateMultiplier ?? MEMORY_DEFAULT_CANDIDATE_MULTIPLIER
+    if (!Number.isSafeInteger(candidateMultiplier) || candidateMultiplier < 1) {
+      throw new MemoryError(
+        'memory: candidateMultiplier must be a positive safe integer',
+        'MEMORY_INVALID_CONFIG',
+      )
+    }
     this.search = Object.freeze({
       maxResults,
       minScore,
@@ -88,6 +99,7 @@ export class MemoryServiceConfig {
         halfLifeDays,
       }) satisfies TemporalDecayConfig,
       sourceWeights,
+      candidateMultiplier,
     })
   }
 }

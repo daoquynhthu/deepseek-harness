@@ -38,6 +38,7 @@ function config(over: Partial<MemorySearchConfig> = {}): MemorySearchConfig {
     minScore: 0.1,
     temporalDecay: EVERGREEN_DECAY,
     sourceWeights: { global: 1, workspace: 1, session: 1 },
+    candidateMultiplier: 3,
     ...over,
   }
 }

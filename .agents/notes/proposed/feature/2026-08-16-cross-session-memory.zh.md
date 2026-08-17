@@ -21,19 +21,19 @@ Grok 的记忆系统（`xai-grok-memory`）是成熟参照：`~/.grok/memory/` �
 ```
 {dshHome}/memory/
   MEMORY.md                              # global curated knowledge
-  {workspace_hash}/                      # per-workspace, blake3(cwd) truncated
+  {workspace_hash}/                      # per-workspace, blake2b512(cwd) truncated
     MEMORY.md                            # project-level curated knowledge
     sessions/YYYY-MM-DD-{slug}-{sid8}.md # archived session summaries
     index.sqlite                         # chunk index: FTS5 + optional vec0
 ```
 
-根目录经 `@deepseek-ai/dsh-home-paths` 的 `dshHomePath('memory')` 解析，保持 harness 的单根规则（`~/.dsh`，可用 `DSH_HOME` 覆盖）。工作区目录名是工作区路径的截断 blake3 哈希，遵循 `session-reference` 模式的不透明 id 约定：不明文存储任何工作区路径，同一项目的两个 checkout 共享同一份记忆。
+根目录经 `@deepseek-ai/dsh-home-paths` 的 `dshHomePath('memory')` 解析，保持 harness 的单根规则（`~/.dsh`，可用 `DSH_HOME` 覆盖）。工作区目录名是工作区路径的截断 blake2b512 哈希，遵循 `session-reference` 模式的不透明 id 约定：不明文存储任何工作区路径，同一项目的两个 checkout 共享同一份记忆。
 
 三个 scope 沿用 grok：`global`（evergreen，所有工作区）、`workspace`（evergreen，一个项目）、`session`（自动归档的会话日志，衰减）。Evergreen 源豁免时间衰减；会话 chunk 按配置的半衰期衰减。
 
 ### 索引与混合搜索
 
-`index.sqlite` 含 `chunks` 表（相对品牌 path、起止行、text、hash、source、访问次数、时间戳）与 contentless FTS5 虚拟表（BM25 关键词搜索）。搜索流水线沿用 grok 的关键词侧：FTS 关键词搜索始终可用；分数归一化到 `[0,1]`；过滤内容空 chunk（空的或 scaffold 模板 `MEMORY.md` stub）；仅对会话 chunk 施加时间衰减；加源权重与访问频次提升；按 `maxResults` 封顶。已发布 provider 是纯 FTS-only，无 embedding 或向量路径：召回路径永不依赖 LLM 或 embedding 调用，保持 keyless 回放确定性（与 `recallable-compaction` 排除语义召回是同一约束）。向量 KNN、混合评分权重与 MMR 重排属于后续工作（见下），不作为已发布的配置。
+`index.sqlite` 含 `chunks` 表（相对品牌 path、起止行、text、hash、source、访问次数、时间戳）与 contentless FTS5 虚拟表（BM25 关键词搜索）。搜索流水线沿用 grok 的关键词侧：FTS 关键词搜索始终可用；分数归一化到 `[0,1]`；先过滤内容空 chunk（空的或 scaffold 模板 `MEMORY.md` stub），在 `maxResults * candidateMultiplier` 的候选窗口上进行，使脚手架不会在结果上限内挤掉真实匹配；仅对会话 chunk 施加时间衰减；加源权重与访问频次提升；按 `maxResults` 封顶。关键词提取移除 grok 扩展的英文停用词集，丢弃单字符与纯数字词元，并保留带下划线的标识符。已发布 provider 是纯 FTS-only，无 embedding 或向量路径：召回路径永不依赖 LLM 或 embedding 调用，保持 keyless 回放确定性（与 `recallable-compaction` 排除语义召回是同一约束）。向量 KNN、混合评分权重与 MMR 重排属于后续工作（见下），不作为已发布的配置。
 
 embedding provider 是文档化的后续工作，默认永不随产品发布。DeepSeek 公开 API 无 embeddings 端点（V4-Pro/V4-Flash 仅 chat），因此默认部署跑 FTS-only；配置了 OpenAI 兼容 embeddings 端点（provider 名、model、dimensions）的部署可通过同一 `dsh-llm` family seam 获得混合搜索。这是配置而非代码：向量路径绝不能使 keyless FTS 路径回退。
 
@@ -59,7 +59,7 @@ embedding provider 是文档化的后续工作，默认永不随产品发布。D
 两条写入路径喂养索引：
 
 1. **策展写入**：`memory_set(path, content)` 工具与显式 CLI/命令入口让用户或模型把策展知识追加到 `MEMORY.md`。写入是经存储层的 markdown 编辑，随后重建索引。`memory_set` 只接受 evergreen 路径（`MEMORY.md`、`workspace/MEMORY.md`），拒绝会话归档，使写边界比读表面更窄。这是主路径，也是让记忆可信的路径——模型写持久结论，而非原始 transcript。
-2. **会话归档**：会话结束时（配置 `saveOnEnd`）插件把有界会话摘要写入 `sessions/YYYY-MM-DD-{slug}-{sid8}.md`，使会话级历史可搜索而不污染策展知识。会话归档格式借用 `recallable-compaction` 的 frozen-index-chunk 思路：紧凑的 what-happened 卡片，而非完整 transcript（完整 transcript 已存在于会话日志）。
+2. **会话归档**：在每次会话 flush——会话存储持久化日志前已 await 的持久 checkpoint——插件把有界 what-happened 卡片写入 `sessions/YYYY-MM-DD-{slug}-{sid8}.md`，当会话足够充实（至少三条真实用户查询、合计至少 50 字节，排除插件与 goal 注入源）且非 subagent 时，使会话级历史可搜索而不污染策展知识。会话归档格式借用 `recallable-compaction` 的 frozen-index-chunk 思路：紧凑的卡片，而非完整 transcript（完整 transcript 已存在于会话日志）。归档挂在 flush checkpoint 而非会话销毁，因为 provider 的 `session/disposed` 监听器在 root dispose 时会先于会话分离被拆除（provider fiber 在 root 的销毁序中先卸载），这曾确定性丢失归档；flush 被存储 await，写入在 checkpoint 处持久。同一会话的后续 flush 会重写同一文件名，卡片反映累积会话，最终 flush 留下完整摘要供后续进程检索。文件名是确定性的：日期来自会话创建时间，slug 来自首条真实用户查询，sid8 是会话 id 的 blake2b512 摘要前 8 位十六进制（原始会话 id 形如 `session-N`，会违反归档名的 `[a-z0-9]{8}` 后缀）。卡片沿用 grok 的 `generate_metadata_summary`：消息计数、会话日期、前几条真实用户查询。
 
 watcher（可选，默认关）在搜索前对外部编辑的 `.md` 文件重建索引，沿用 grok 的 dirty-file 同步——用户在自己编辑器里改 `MEMORY.md` 后无需重启即可在召回中看到改动。删除的文件移除其 chunk。
 
@@ -78,6 +78,7 @@ memory:
   search:
     maxResults: 10
     minScore: 0.1
+    candidateMultiplier: 3
     temporalDecay:
       enabled: true
       halfLifeDays: 30
@@ -130,6 +131,7 @@ seam 遵循 [capability-seam pattern](../../implemented/architecture/2026-06-13-
 - 注入每会话仅一次，注入后的请求头跨后续轮次字节稳定（KV 缓存前缀复用），由多轮 keyless 快照断言。
 - Evergreen chunk（global/workspace）豁免时间衰减；会话 chunk 按配置半衰期衰减；重建索引时不变内容保留 chunk 创建时间戳（衰减不被重启重置）；内容空 scaffold chunk 永不进入结果或注入。
 - 搜索结果携带与 `memory_get` 接受的相同相对品牌路径；搜索命中可经 `memory_get` 读回。
+- 一个充实的会话（三条真实用户查询合计 50+ 字节、非 subagent）在其 flush 时归档到 `sessions/YYYY-MM-DD-{slug}-{sid8}.md`；卡片跨运行确定性（创建时间日期、slug、id 摘要），后续 flush 重写，可被新进程召回；`saveOnEnd: false` 不写任何文件。
 - 存储根经 `dshHomePath('memory')` 解析；配置 `DSH_HOME` 无需其他改动即可重定位记忆。
 - 销毁移除插件的注册、工具与 watcher（HMR 安全测试）；`doc-sync` 目录在同一变更中更新；新源码目录保持每文件 100% 覆盖。
 - 打包、配置与 seam JSDoc 点名全部三个角色；README 以规范 Model Experience 格式记录 model、token、KV-cache 效应，包括 FTS-only 默认的零 embedding 成本。

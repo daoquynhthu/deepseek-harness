@@ -3436,7 +3436,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'MemorySearchConfig',
-    declaration: 'export interface MemorySearchConfig {\n    readonly maxResults: number;\n    readonly minScore: number;\n    readonly temporalDecay: TemporalDecayConfig;\n    readonly sourceWeights: Readonly<Record<MemoryScope, number>>;\n}',
+    declaration: 'export interface MemorySearchConfig {\n    readonly maxResults: number;\n    readonly minScore: number;\n    readonly temporalDecay: TemporalDecayConfig;\n    readonly sourceWeights: Readonly<Record<MemoryScope, number>>;\n    readonly candidateMultiplier: number;\n}',
   },
   {
     name: 'MemorySearchPage',

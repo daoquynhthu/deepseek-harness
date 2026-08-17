@@ -21,19 +21,19 @@ Ship a cross-session memory capability as a new seam: Service Definition `@deeps
 ```
 {dshHome}/memory/
   MEMORY.md                              # global curated knowledge
-  {workspace_hash}/                      # per-workspace, blake3(cwd) truncated
+  {workspace_hash}/                      # per-workspace, blake2b512(cwd) truncated
     MEMORY.md                            # project-level curated knowledge
     sessions/YYYY-MM-DD-{slug}-{sid8}.md # archived session summaries
     index.sqlite                         # chunk index: FTS5 + optional vec0
 ```
 
-The root resolves through `dshHomePath('memory')` from `@deepseek-ai/dsh-home-paths`, keeping the harness's single-root rule (`~/.dsh`, overridable via `DSH_HOME`). The workspace directory name is a truncated blake3 hash of the workspace path, matching the `session-reference` pattern of opaque ids: no workspace path is stored in plain text, and two checkouts of the same project share one memory.
+The root resolves through `dshHomePath('memory')` from `@deepseek-ai/dsh-home-paths`, keeping the harness's single-root rule (`~/.dsh`, overridable via `DSH_HOME`). The workspace directory name is a truncated blake2b512 hash of the workspace path, matching the `session-reference` pattern of opaque ids: no workspace path is stored in plain text, and two checkouts of the same project share one memory.
 
 Three scopes follow grok: `global` (evergreen, all workspaces), `workspace` (evergreen, one project), and `session` (auto-archived session logs, decaying). Evergreen sources are exempt from temporal decay; session chunks decay with a configured half-life.
 
 ### Index and hybrid search
 
-`index.sqlite` holds a `chunks` table (relative branded path, start/end line, text, hash, source, access count, timestamps) and a contentless FTS5 virtual table for BM25 keyword search. The search pipeline follows grok's keyword side: FTS keyword search always available; scores normalized to `[0,1]`; content-free chunks (empty or scaffold-template `MEMORY.md` stubs) filtered; temporal decay applied to session chunks only; source weights plus access-frequency boost; capped by `maxResults`. The shipped provider is FTS-only with no embedding or vector path: the recall path never depends on an LLM or embedding call, preserving keyless replay determinism (the same constraint that ruled out semantic recall in `recallable-compaction`). Vector KNN, hybrid scoring weights, and MMR re-ranking remain follow-ups (below), not shipped configuration.
+`index.sqlite` holds a `chunks` table (relative branded path, start/end line, text, hash, source, access count, timestamps) and a contentless FTS5 virtual table for BM25 keyword search. The search pipeline follows grok's keyword side: FTS keyword search always available; scores normalized to `[0,1]`; content-free chunks (empty or scaffold-template `MEMORY.md` stubs) filtered before scoring, over a candidate window of `maxResults * candidateMultiplier` so scaffolding cannot crowd out real matches within the result cap; temporal decay applied to session chunks only; source weights plus access-frequency boost; capped by `maxResults`. Keyword extraction removes grok's expanded English stop-word set, drops single-character and pure-numeric tokens, and keeps underscored identifiers. The shipped provider is FTS-only with no embedding or vector path: the recall path never depends on an LLM or embedding call, preserving keyless replay determinism (the same constraint that ruled out semantic recall in `recallable-compaction`). Vector KNN, hybrid scoring weights, and MMR re-ranking remain follow-ups (below), not shipped configuration.
 
 The embedding provider is a documented follow-up, never shipped by default. DeepSeek's public API exposes no embeddings endpoint (V4-Pro/V4-Flash are chat-only), so a default deployment runs FTS-only; a deployment that configures an OpenAI-compatible embeddings endpoint (provider name, model, dimensions) could get hybrid search through the same `dsh-llm` family seam. This is configuration, not code: the vector path must never regress the keyless FTS path.
 
@@ -59,7 +59,7 @@ The search tools expose prior knowledge rather than the operation performing the
 Two write paths feed the index:
 
 1. **Curated writes**: a `memory_set(path, content)` tool and an explicit CLI/command affordance let the user or model append curated knowledge to `MEMORY.md`. Writes are markdown edits through the storage layer, then reindexed. `memory_set` accepts only the evergreen paths (`MEMORY.md`, `workspace/MEMORY.md`) and rejects session archives, keeping the write boundary narrower than the read surface. This is the primary path and the one that makes memory trustworthy — the model writes durable conclusions, not raw transcripts.
-2. **Session archive**: at session end, the plugin writes a bounded session summary to `sessions/YYYY-MM-DD-{slug}-{sid8}.md` when configured (`saveOnEnd`), so session-level history becomes searchable without polluting curated knowledge. The session-archive format borrows the frozen-index-chunk idea from `recallable-compaction`: a compact what-happened card, not a full transcript (the full transcript already lives in the session log).
+2. **Session archive**: on each session flush — the durable checkpoint the session store already awaits before persisting the log — the plugin writes a bounded what-happened card to `sessions/YYYY-MM-DD-{slug}-{sid8}.md` when the session is substantial (at least three real user queries totaling at least 50 bytes, excluding plugin- and goal-injected sources) and not a subagent, so session-level history becomes searchable without polluting curated knowledge. The session-archive format borrows the frozen-index-chunk idea from `recallable-compaction`: a compact card, not a full transcript (the full transcript already lives in the session log). Archiving hooks the flush checkpoint rather than session disposal because a provider's `session/disposed` listener is torn down before the session detaches during root dispose (the provider fiber unloads first in the root's dispose order), which dropped archives deterministically; flush is awaited by the store, so the write is durable at the checkpoint. A later flush of the same session rewrites the same filename, so the card reflects the cumulative session and the final flush leaves the full summary searchable by a later process. The filename is deterministic: the date from the session's creation time, a slug from the first real user query, and the first 8 hex digits of a blake2b512 digest of the session id (raw session ids are `session-N` and would violate the archive-name `[a-z0-9]{8}` suffix). The card mirrors grok's `generate_metadata_summary`: message counts, the session date, and the first few real user queries.
 
 A watcher (optional, default-off) reindexes externally edited `.md` files before search, following grok's dirty-file sync — a user editing `MEMORY.md` in their editor sees the edit in recall without a restart. Deleted files drop their chunks.
 
@@ -78,6 +78,7 @@ memory:
   search:
     maxResults: 10
     minScore: 0.1
+    candidateMultiplier: 3
     temporalDecay:
       enabled: true
       halfLifeDays: 30
@@ -130,6 +131,7 @@ Deferred until observation calls for them:
 - Injection fires once per session and the injected request header is byte-stable across later turns (KV-cache prefix reuse), asserted by a multi-turn keyless snapshot.
 - Evergreen chunks (global/workspace) are exempt from temporal decay; session chunks decay with the configured half-life; reindexing unchanged content preserves chunk creation timestamps (decay is not reset by restart); content-free scaffold chunks never appear in results or injection.
 - Search results carry the same relative branded paths accepted by `memory_get`; a search hit reads back through `memory_get`.
+- A substantial session (three real user queries totaling 50+ bytes, not a subagent) archives to `sessions/YYYY-MM-DD-{slug}-{sid8}.md` at its flush; the card is deterministic across runs (creation-time date, slug, id digest), rewrites on later flushes, and is recallable by a fresh process; `saveOnEnd: false` writes nothing.
 - The storage root resolves through `dshHomePath('memory')`; a configured `DSH_HOME` relocates memory with no other change.
 - Disposal removes the plugin's registrations, tools, and watcher (HMR-safety test); `doc-sync` catalogs update in the same change; new source directories hold per-file 100% coverage.
 - The packaging, config, and seam JSDoc name all three roles; the README documents model, token, and KV-cache effects in the canonical Model Experience format, including the FTS-only default's zero embedding cost.

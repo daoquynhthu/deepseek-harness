@@ -1303,6 +1303,11 @@ export interface Config extends MemoryConfig {
   dshHome?: string
   /** Memory index database path; defaults to `{root}/index.sqlite`. */
   path?: string
+  /** Session-end archival configuration. */
+  session?: {
+    /** Archive a substantial session to the sessions directory when it ends. Defaults to true. */
+    saveOnEnd?: boolean
+  }
 }
 
 /** Open-phase for the SQLite memory index. */
@@ -1314,7 +1319,7 @@ export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
 
 Depends on: [`MemoryConfig`](../packages/memory/memory/src/index.ts)
 
-Source: [`packages/memory/memory-markdown/src/index.ts:72`](../packages/memory/memory-markdown/src/index.ts)
+Source: [`packages/memory/memory-markdown/src/index.ts:88`](../packages/memory/memory-markdown/src/index.ts)
 
 <a id="deepseek-aidsh-message-feedback"></a>
 

@@ -22,7 +22,7 @@ export type {
   TemporalDecayConfig,
 } from './types.ts'
 export type { Config, MemoryErrorCode } from './config.ts'
-export { MEMORY_DEFAULT_MAX_RESULTS, MEMORY_DEFAULT_MIN_SCORE, MemoryError } from './config.ts'
+export { MEMORY_DEFAULT_MAX_RESULTS, MEMORY_DEFAULT_MIN_SCORE, MEMORY_DEFAULT_CANDIDATE_MULTIPLIER, MemoryError } from './config.ts'
 export { chunkHash, chunkMarkdown, attributeChunk } from './chunker.ts'
 export type { ChunkConfig, ExtractedChunk } from './chunker.ts'
 export {

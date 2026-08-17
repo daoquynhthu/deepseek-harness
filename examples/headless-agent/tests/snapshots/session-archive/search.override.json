@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "chunks",
+    "chunks": [
+      { "type": "block-start", "index": 0, "blockType": "tool-call" },
+      { "type": "tool-call-delta", "index": 0, "id": "call_memory_search", "name": "memory_search", "argumentsDelta": "{\"query\":\"deployment convention\"}" },
+      { "type": "block-end", "index": 0, "block": { "type": "tool-call", "id": "call_memory_search", "name": "memory_search", "arguments": "{\"query\":\"deployment convention\"}" } },
+      { "type": "usage", "usage": { "inputTokens": 15, "outputTokens": 6 } },
+      { "type": "finish", "reason": { "kind": "tool-calls" } }
+    ]
+  },
+  {
+    "kind": "chunks",
+    "chunks": [
+      { "type": "block-start", "index": 0, "blockType": "text" },
+      { "type": "text-delta", "index": 0, "text": "SESSION ARCHIVE FOUND" },
+      { "type": "block-end", "index": 0, "block": { "type": "text", "text": "SESSION ARCHIVE FOUND" } },
+      { "type": "usage", "usage": { "inputTokens": 20, "outputTokens": 2 } },
+      { "type": "finish", "reason": { "kind": "stop" } }
+    ]
+  }
+]

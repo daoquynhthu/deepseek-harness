@@ -33,13 +33,18 @@
 | `workspace` | *（必填）* | 用于派生工作区记忆目录的工作区路径。 |
 | `dshHome` | *（省略）* | 显式宿主主目录覆盖。 |
 | `path` | *（省略）* | 记忆索引数据库路径；默认为 `{root}/index.sqlite`。 |
+| `session.saveOnEnd` | `true` | 把充实的会话归档到工作区会话目录。 |
 | （服务键） | 见 `dsh-memory` | 继承自 Service Definition 的检索与评分配置。 |
 
 `workspace` 是必填项，且不得为空。`openAt: never` 禁用检索与注入：调用以 `MEMORY_INVALID_CONFIG` 拒绝，并说明部署将索引配置为从不打开。
 
+## 会话归档
+
+在每次会话 flush 时，provider 为通过归档门限的会话写摘要卡片：至少三条真实用户查询（排除插件与 goal 注入源）合计至少 50 字节，且来源非 `subagent`。卡片落在 `sessions/{date}-{slug}-{sid8}.md`，其中 `date` 是会话创建日期的 UTC 形式，`slug` 是首条真实用户查询小写并折叠为 `[a-z0-9-]`（截断到 30 字符，为空时用 `session`），`sid8` 是会话 id 的 `blake2b512` 摘要前 8 位十六进制——一个稳定的 id 派生后缀，保证文件名确定性而不泄露完整会话 id。卡片是 frozen-index-chunk 风格的 what-happened 摘要（消息计数、创建日期、前五条真实查询），绝非 transcript：transcript 已存在于会话日志。同一会话的后续 flush 重写同一文件名，因此卡片始终反映累积会话；退出前的最终 flush 把完整摘要留给下一个进程检索。`saveOnEnd: false` 完全禁用归档。
+
 ## 索引与召回
 
-打开时，provider 扫描布局根目录并重新索引每个 `.md` 文件，删除磁盘上已不存在文件的索引行。每次写入都会重新索引该文件；内存状态在读取时惰性刷新。分块文本以 contentless FTS5 表（`unicode61` 分词器）建立索引。检索通过移除英文停用词集提取关键词、运行带引号词条的 FTS5 扫描、按位置排序，然后应用服务的评分管线（作用域权重、会话分块的时域衰减、访问加成）并丢弃低于 `minScore` 的结果。分块出现在检索结果中时其 `accessCount` 递增。
+打开时，provider 扫描布局根目录并重新索引每个 `.md` 文件，删除磁盘上已不存在文件的索引行。每次写入都会重新索引该文件；内存状态在读取时惰性刷新。分块文本以 contentless FTS5 表（`unicode61` 分词器）建立索引。检索通过移除英文停用词集提取关键词，丢弃单字符与纯数字词元，同时保留有意义的短词与带下划线的标识符，在 `limit * candidateMultiplier` 行的候选窗口上运行带引号词条的 FTS5 扫描，丢弃无内容匹配，按位置对幸存的内容分块排序，然后应用服务的评分管线（作用域权重、会话分块的时域衰减、访问加成）并返回前 `limit` 条。分块出现在检索结果中时其 `accessCount` 递增。
 
 ## Model Experience
 

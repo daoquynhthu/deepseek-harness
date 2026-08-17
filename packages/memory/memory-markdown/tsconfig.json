@@ -24,6 +24,9 @@
       "path": "../../util/home-paths"
     },
     {
+      "path": "../../core/session"
+    },
+    {
       "path": "../../memory/memory"
     },
     {

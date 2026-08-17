@@ -21,6 +21,9 @@ describe('config validation edge cases', () => {
     [{ halfLifeDays: -5 }, /halfLifeDays/],
     [{ sourceWeights: { global: -1 } }, /source weight/],
     [{ sourceWeights: { workspace: Number.NaN } }, /source weight/],
+    [{ candidateMultiplier: 0 }, /candidateMultiplier/],
+    [{ candidateMultiplier: 1.5 }, /candidateMultiplier/],
+    [{ candidateMultiplier: -2 }, /candidateMultiplier/],
   ] as const)('rejects invalid config %j', (config, message) => {
     expect(() => new MemoryServiceConfig(config)).toThrow(message)
   })
@@ -30,6 +33,7 @@ describe('config validation edge cases', () => {
     expect(config.search.maxResults).toBe(10)
     expect(config.search.minScore).toBe(0.1)
     expect(config.search.temporalDecay).toEqual({ enabled: true, halfLifeDays: 30 })
+    expect(config.search.candidateMultiplier).toBe(3)
     expect(config.sourceWeights).toEqual({ global: 1, workspace: 1, session: 1 })
     expect(Object.isFrozen(config.search)).toBe(true)
     expect(Object.isFrozen(config.search.temporalDecay)).toBe(true)
@@ -42,9 +46,11 @@ describe('config validation edge cases', () => {
       temporalDecayEnabled: false,
       halfLifeDays: 7,
       sourceWeights: { session: 2 },
+      candidateMultiplier: 5,
     })
     expect(config.search.maxResults).toBe(3)
     expect(config.search.temporalDecay).toEqual({ enabled: false, halfLifeDays: 7 })
+    expect(config.search.candidateMultiplier).toBe(5)
     expect(config.sourceWeights.session).toBe(2)
     expect(config.sourceWeights.global).toBe(1)
   })

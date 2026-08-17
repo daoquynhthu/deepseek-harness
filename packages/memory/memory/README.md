@@ -40,10 +40,11 @@ The path factory rejects any other path, keeping model write authority narrow. S
 | `temporalDecayEnabled` | `true` | Apply exponential decay to `session` chunks when enabled. |
 | `halfLifeDays` | `30` | Decay half-life in days; `lambda = ln(2) / halfLifeDays`. |
 | `sourceWeights` | `{ global: 1, workspace: 1, session: 1 }` | Per-scope score weights. |
+| `candidateMultiplier` | `3` | Multiplier applied to the result cap to size the FTS candidate window before content-free filtering. |
 
 ## Scoring pipeline
 
-The merged score is computed from the FTS position base through the shared `scoring.ts` helpers: evergreen scopes (`global`, `workspace`) keep their base score, `session` chunks decay exponentially by age with the configured half-life, each scope's weight scales the result, and an access-frequency boost (capped at 0.2) rewards chunks that appeared in recall. The score is clamped to `[0, 1]`. Content-free chunks — structurally empty text or evergreen boilerplate scaffolding — never surface in results or injection.
+The merged score is computed from the FTS position base through the shared `scoring.ts` helpers: evergreen scopes (`global`, `workspace`) keep their base score, `session` chunks decay exponentially by age with the configured half-life, each scope's weight scales the result, and an access-frequency boost (capped at 0.2) rewards chunks that appeared in recall. The score is clamped to `[0, 1]`. Content-free chunks — structurally empty text or evergreen boilerplate scaffolding — never surface in results or injection. Backends fetch up to `limit * candidateMultiplier` candidate rows, drop content-free matches first, then compute the position base over the surviving content-bearing chunks so scaffolding cannot crowd out real matches within the result cap.
 
 ## Errors
 

@@ -33,13 +33,18 @@ The index database is a dedicated SQLite file created owner-only (`0600`). Its s
 | `workspace` | *(required)* | Workspace path used to derive the workspace memory directory. |
 | `dshHome` | *(omitted)* | Explicit harness home override. |
 | `path` | *(omitted)* | Memory index database path; defaults to `{root}/index.sqlite`. |
+| `session.saveOnEnd` | `true` | Archive substantial sessions to the workspace sessions directory. |
 | (service keys) | see `dsh-memory` | Search and scoring configuration inherited from the Service Definition. |
 
 `workspace` is required and must not be blank. `openAt: never` disables search and injection: calls reject with `MEMORY_INVALID_CONFIG` explaining that the deployment configured the index as never-open.
 
+## Session archives
+
+On each session flush, the provider writes a summary card for sessions that clear the archive gate: at least three real user queries (excluding plugin- and goal-injected sources) with a total length of at least 50 bytes, and an origin other than `subagent`. The card lands at `sessions/{date}-{slug}-{sid8}.md`, where `date` is the session creation date in UTC, `slug` the first real user query lowercased and collapsed to `[a-z0-9-]` (truncated to 30 characters, `session` when empty), and `sid8` the first 8 hex digits of the `blake2b512` digest of the session id — a stable id-derived suffix that keeps the filename deterministic without leaking the full session id. The card is a what-happened summary in the frozen-index-chunk style (message counts, creation date, and the first five real queries), never a transcript: the transcript already lives in the session log. A later flush of the same session rewrites the same filename, so the card always reflects the cumulative session; the final flush before exit leaves the full summary searchable by the next process. `saveOnEnd: false` disables archiving entirely.
+
 ## Indexing and recall
 
-On open, the provider scans the layout roots and reindexes every `.md` file, dropping index rows for files that no longer exist on disk. Each write reindexes the written file; in-memory state is refreshed lazily on read. Chunk text is indexed with a contentless FTS5 table (`unicode61` tokenizer). Search extracts keywords by removing an English stop-word set, runs a quoted-term FTS5 scan, ranks matches by position, then applies the service's scoring pipeline (scope weights, temporal decay for session chunks, access boost) and drops results below `minScore`. A chunk's `accessCount` is incremented when it appears in a search result.
+On open, the provider scans the layout roots and reindexes every `.md` file, dropping index rows for files that no longer exist on disk. Each write reindexes the written file; in-memory state is refreshed lazily on read. Chunk text is indexed with a contentless FTS5 table (`unicode61` tokenizer). Search extracts keywords by removing an English stop-word set, dropping single-character and pure-numeric tokens while preserving meaningful short terms and underscored identifiers, runs a quoted-term FTS5 scan over a candidate window of `limit * candidateMultiplier` rows, drops content-free matches, ranks the surviving content-bearing chunks by position, then applies the service's scoring pipeline (scope weights, temporal decay for session chunks, access boost) and returns the top `limit`. A chunk's `accessCount` is incremented when it appears in a search result.
 
 ## Model Experience
 

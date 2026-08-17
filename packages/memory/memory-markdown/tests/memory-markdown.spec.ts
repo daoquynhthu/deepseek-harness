@@ -155,6 +155,28 @@ describe('query helpers', () => {
       'quick', 'brown', 'fox', 'dog',
     ])
     expect(extractKeywords('the and or')).toEqual([])
+    expect(extractKeywords('what was the solution for the authentication bug')).toEqual([
+      'solution', 'authentication', 'bug',
+    ])
+    expect(extractKeywords('how do I configure the memory system')).toEqual([
+      'configure', 'memory', 'system',
+    ])
+    expect(extractKeywords('show me that database migration we talked about')).toEqual([
+      'database', 'migration', 'talked',
+    ])
+    expect(extractKeywords('that thing we discussed about the API')).toEqual([
+      'discussed', 'api',
+    ])
+  })
+
+  it('drops single-character and pure-numeric tokens while preserving meaningful short terms', () => {
+    expect(extractKeywords('I a x language')).toEqual(['language'])
+    expect(extractKeywords('Go and JS patterns')).toEqual(['go', 'js', 'patterns'])
+    expect(extractKeywords('port 8080 and 443 config')).toEqual(['port', 'config'])
+  })
+
+  it('keeps underscore inside tokens so identifiers survive', () => {
+    expect(extractKeywords('the my_function variable')).toEqual(['my_function', 'variable'])
   })
 
   it('scans the FTS index, capping results and restricting scope', async () => {
@@ -194,6 +216,7 @@ describe('query helpers', () => {
       minScore: 0,
       temporalDecay: { enabled: true, halfLifeDays: 30 },
       sourceWeights: { global: 1, workspace: 1, session: 1 },
+      candidateMultiplier: 3,
     }
     const score = scoreRow(row, 0.8, 1000, config, config.sourceWeights)
     expect(score).toBeGreaterThan(0.8)
@@ -481,6 +504,23 @@ describe('MarkdownMemoryService', () => {
 
       const injected = await ctx.memory.inject({ maxChunks: 1 })
       expect(injected.map(chunk => chunk.path)).toEqual([workspace])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('finds real chunks behind content-free matches within the amplified candidate window', async () => {
+    const ctx = await mount(await temporaryPath())
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      const workspace = MemoryPath('workspace', 'MEMORY.md')
+      const filler = 'the cluster spans regions with zones, replicas, observability, telemetry, and alerting wired through the ops pipeline. '
+      await ctx.memory.write(global, '# Project memory\n\nThis file is managed by the harness.')
+      await ctx.memory.write(workspace, `# Workspace memory\n\n${filler}managed ${filler}`)
+
+      const hits = await ctx.memory.search({ query: 'managed', limit: 1 })
+      expect(hits.results.map(result => result.chunk.path)).toEqual([workspace])
+      expect(hits.total).toBe(1)
     } finally {
       await ctx.fiber.dispose()
     }

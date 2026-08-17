@@ -48,10 +48,11 @@ interface MemoryChunk {
 
 ## 评分
 
-markdown provider 按关键词扫描结果集内的位置对 FTS 命中排序，再应用服务配置的管线：常青作用域（`global`、`workspace`）保留基础分数，`session` 分块按可配置的半衰期（默认 30 天）指数衰减，每个作用域带权重和封顶 0.2 的访问频率加成。合并分数被限制在 `[0, 1]`；低于 `minScore` 的结果被丢弃。结构性为空或匹配样板脚手架模板（`this file is managed`、`auto-generated`、`do not edit`、`curated knowledge`）的分块绝不会出现在结果或注入中。
+markdown provider 通过移除英文停用词集提取 FTS 关键词，丢弃单字符与纯数字词元而保留带下划线的标识符，在 `limit * candidateMultiplier` 行的候选窗口内运行 FTS 扫描，先丢弃无内容匹配，再按关键词扫描结果集内的位置对幸存的内容分块排序，并应用服务配置的管线：常青作用域（`global`、`workspace`）保留基础分数，`session` 分块按可配置的半衰期（默认 30 天）指数衰减，每个作用域带权重和封顶 0.2 的访问频率加成。合并分数被限制在 `[0, 1]`；低于 `minScore` 的结果被丢弃。结构性为空或匹配样板脚手架模板（`this file is managed`、`auto-generated`、`do not edit`、`curated knowledge`）的分块绝不会出现在结果或注入中。
 
 ```ts type-equiv
-/** Retrieval mode selected by the search pipeline. */
+/** Retrieval mode selected by the search pipeline; the shipped FTS path emits `fts-only`, and the deferred vector
+ * path would emit the others. */
 type MemoryRetrievalMode = 'fts-only' | 'hybrid' | 'embedding-fallback'
 ```
 
@@ -67,6 +68,10 @@ interface MemorySearchResult {
   readonly mode: MemoryRetrievalMode
 }
 ```
+
+## 会话归档
+
+provider 在每次持久 flush——即会话日志持久化所依赖的同一 checkpoint——为足够充实的会话写入 what-happened 摘要卡片：至少三条真实用户查询（排除插件与 goal 注入源）合计至少 50 字节，且来源非 `subagent`。卡片记录消息计数、会话创建日期与前五条真实用户查询；它绝不重复 transcript，后者已存在于会话日志。归档文件名 `sessions/{date}-{slug}-{sid8}.md` 是确定性的：日期来自会话创建时间，slug 来自首条真实用户查询，sid8 是会话 id 的 8 位十六进制摘要，因此相同会话产生相同文件名而不泄露 id。后续 flush 重写同一文件，把完整会话摘要留给后续进程检索；归档器遵循 `session.saveOnEnd`（默认 `true`）。细节见 [provider README](../../packages/memory/memory-markdown/README.md)。
 
 ## 会话开始注入
 

@@ -16,28 +16,45 @@ import {
   type MemorySearchConfig,
 } from '@deepseek-ai/dsh-memory'
 
-/** English stop words removed during FTS-only keyword extraction. */
+/** English stop words removed during FTS-only keyword extraction.
+ * The list follows grok's keyword side: articles, pronouns, common verbs,
+ * prepositions, conjunctions, question words, vague references, time
+ * references, request words, and common filler. */
 const STOP_WORDS = new Set([
   'a', 'an', 'the', 'this', 'that', 'these', 'those',
-  'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'she', 'it', 'they', 'him',
+  'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'she', 'it', 'they',
+  'him', 'her', 'its', 'them', 'us',
   'is', 'are', 'was', 'were', 'be', 'been', 'being',
-  'and', 'or', 'but', 'if', 'then', 'else', 'of', 'on', 'in', 'at', 'to', 'for',
-  'with', 'by', 'from', 'as', 'about', 'into', 'over', 'after', 'before',
+  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+  'should', 'can', 'may', 'might',
+  'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'about',
+  'into', 'through', 'during', 'before', 'after', 'above', 'below', 'over',
+  'and', 'or', 'but', 'if', 'then', 'else', 'because', 'as', 'while',
   'what', 'when', 'where', 'which', 'who', 'whom', 'why', 'how',
-  'do', 'does', 'did', 'have', 'has', 'had', 'will', 'would', 'can', 'could',
+  'thing', 'things', 'stuff', 'something', 'anything', 'everything',
+  'one', 'some', 'any', 'all', 'each', 'every', 'both', 'few', 'more',
+  'yesterday', 'today', 'tomorrow', 'earlier', 'later', 'recently',
+  'now', 'just', 'already', 'still', 'yet',
+  'please', 'help', 'find', 'show', 'get', 'tell', 'give', 'make',
+  'not', 'no', 'yes', 'also', 'too', 'very', 'really', 'here', 'there',
+  'so', 'up', 'out', 'like', 'than', 'other', 'only',
 ])
 
 /** Extract FTS keywords from a conversational query by removing stop words.
+ * Tokens shorter than two characters and pure-numeric tokens are dropped so
+ * meaningful short terms like `js`, `ui`, `db`, `ai` survive while noise does
+ * not; `_` is kept inside tokens to match identifiers like `my_function`.
  * @param query - free-text query.
  * @returns deduplicated lowercase keyword terms.
  */
 export function extractKeywords(query: string): string[] {
   const lowered = query.toLowerCase()
-  const tokens = lowered.split(/[^a-z0-9]+/).filter(token => token.length > 0)
+  const tokens = lowered.split(/[^a-z0-9_]+/).filter(token => token.length > 1)
   const seen = new Set<string>()
   const result: string[] = []
   for (const token of tokens) {
     if (STOP_WORDS.has(token) || seen.has(token)) continue
+    if (/^[0-9]+$/.test(token)) continue
     seen.add(token)
     result.push(token)
   }

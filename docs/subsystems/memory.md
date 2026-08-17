@@ -48,10 +48,11 @@ interface MemoryChunk {
 
 ## Scoring
 
-The markdown provider ranks FTS matches by position within the keyword-scan result set, then applies the service's configured pipeline: evergreen scopes (`global`, `workspace`) keep their base score, `session` chunks decay exponentially with a configurable half-life (default 30 days), and each scope carries a weight with an access-frequency boost capped at 0.2. The merged score is clamped to `[0, 1]`; results below `minScore` are dropped. Chunks that are structurally empty or that match boilerplate scaffolding templates (`this file is managed`, `auto-generated`, `do not edit`, `curated knowledge`) never surface in results or injection.
+The markdown provider extracts FTS keywords by removing an English stop-word set and dropping single-character and pure-numeric tokens while keeping underscored identifiers, scans a candidate window of `limit * candidateMultiplier` FTS rows, drops content-free matches first, then ranks the surviving content-bearing chunks by position within the keyword-scan result set and applies the service's configured pipeline: evergreen scopes (`global`, `workspace`) keep their base score, `session` chunks decay exponentially with a configurable half-life (default 30 days), and each scope carries a weight with an access-frequency boost capped at 0.2. The merged score is clamped to `[0, 1]`; results below `minScore` are dropped. Chunks that are structurally empty or that match boilerplate scaffolding templates (`this file is managed`, `auto-generated`, `do not edit`, `curated knowledge`) never surface in results or injection.
 
 ```ts type-equiv
-/** Retrieval mode selected by the search pipeline. */
+/** Retrieval mode selected by the search pipeline; the shipped FTS path emits `fts-only`, and the deferred vector
+ * path would emit the others. */
 type MemoryRetrievalMode = 'fts-only' | 'hybrid' | 'embedding-fallback'
 ```
 
@@ -67,6 +68,10 @@ interface MemorySearchResult {
   readonly mode: MemoryRetrievalMode
 }
 ```
+
+## Session archives
+
+The provider writes a what-happened summary card for a session at each durable flush — the same checkpoint that persists the session log — when the session is substantial enough: at least three real user queries (excluding plugin- and goal-injected sources) totaling at least 50 bytes, with an origin other than `subagent`. The card records message counts, the session creation date, and the first five real user queries; it never repeats the transcript, which already lives in the session log. The archive filename `sessions/{date}-{slug}-{sid8}.md` is deterministic: the date from the session's creation time, a slug derived from the first real user query, and an 8-hex digest of the session id, so identical sessions yield identical names without leaking the id. Later flushes rewrite the same file, leaving the full session summary searchable by a later process; the archiver honors `session.saveOnEnd` (default `true`). Details live in the [provider README](../../packages/memory/memory-markdown/README.md).
 
 ## Session-start injection
 

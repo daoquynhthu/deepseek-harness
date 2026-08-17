@@ -14,6 +14,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
+import type { Session } from '@deepseek-ai/dsh-session'
 import z from '@deepseek-ai/schemastery'
 import {
   MemoryError,
@@ -48,6 +49,18 @@ import {
 } from './layout.ts'
 import { keywordScan, makeSnippet, rowToChunk, scoreRow, extractKeywords, type IndexedChunkRow } from './query.ts'
 import { openMemoryDatabase, type JournalMode } from './schema.ts'
+import {
+  MEMORY_ARCHIVE_MAX_TOPICS,
+  MEMORY_ARCHIVE_SLUG_MAX_CHARS,
+  archiveDateParts,
+  archiveMessageCounts,
+  meetsSessionArchiveGate,
+  realUserQueryTexts,
+  renderArchiveCard,
+  sessionArchiveName,
+  sessionArchiveSid8,
+  slugify,
+} from './archive.ts'
 
 export {
   MEMORY_SQLITE_SCHEMA_VERSION,
@@ -64,6 +77,9 @@ export { extractKeywords, keywordScan } from './query.ts'
 
 /** Default journal mode for the memory index. */
 export const MEMORY_MARKDOWN_DEFAULT_JOURNAL = 'wal'
+
+/** Default for archiving a substantial session to the sessions directory when it ends. */
+export const MEMORY_MARKDOWN_DEFAULT_SAVE_ON_END = true
 
 /** Open-phase for the SQLite memory index. */
 export type MemoryOpenAt = 'startup' | 'first-search' | 'never'
@@ -89,6 +105,11 @@ export interface Config extends MemoryConfig {
   dshHome?: string
   /** Memory index database path; defaults to `{root}/index.sqlite`. */
   path?: string
+  /** Session-end archival configuration. */
+  session?: {
+    /** Archive a substantial session to the sessions directory when it ends. Defaults to true. */
+    saveOnEnd?: boolean
+  }
 }
 
 interface ResolvedConfig {
@@ -100,6 +121,7 @@ interface ResolvedConfig {
   workspace: string
   dshHome: string | undefined
   path: string
+  saveOnEnd: boolean
 }
 
 /** In-memory file cache keyed by absolute path. */
@@ -119,6 +141,7 @@ export class MarkdownMemoryService extends MemoryService {
     temporalDecayEnabled: z.boolean(),
     halfLifeDays: z.number().min(0.000001),
     sourceWeights: z.object({}),
+    candidateMultiplier: z.number().step(1).min(1),
     index: z.object({
       maxChunkChars: z.number().step(1).min(1),
       chunkOverlapChars: z.number().step(1).min(0),
@@ -129,6 +152,9 @@ export class MarkdownMemoryService extends MemoryService {
     workspace: z.string().required(),
     dshHome: z.string(),
     path: z.string(),
+    session: z.object({
+      saveOnEnd: z.boolean(),
+    }),
   })
 
   private readonly _resolved: ResolvedConfig
@@ -152,6 +178,7 @@ export class MarkdownMemoryService extends MemoryService {
       chunkOverlapChars: this._resolved.chunkOverlapChars,
     })
     ctx.effect(() => async () => this.close(), 'memoryMarkdown.close')
+    ctx.on('session/flush', session => this._archiveOnFlush(session))
   }
 
   /** Open eagerly only when activation owns the configured readiness boundary. */
@@ -177,15 +204,19 @@ export class MarkdownMemoryService extends MemoryService {
     assertNotAborted(request.signal)
     const db = this._requireDb()
     const keywords = extractKeywords(request.query)
-    const scanned = keywordScan(db, keywords, request.scope, limits.limit)
+    const window = limits.limit * this.config.search.candidateMultiplier
+    const scanned = keywordScan(db, keywords, request.scope, window)
     const now = Date.now()
     const rows = scanned.rows
-    const candidates: Array<{ chunk: MemoryChunk; base: number }> = []
-    for (const [index, row] of rows.entries()) {
-      const base = 1 - index / Math.max(1, rows.length)
+    const contentRows: IndexedChunkRow[] = []
+    for (const row of rows) {
       const chunk = rowToChunk(row)
       if (isContentFree(chunk.text, chunk.source)) continue
-      candidates.push({ chunk, base })
+      contentRows.push(row)
+    }
+    const candidates: Array<{ chunk: MemoryChunk; base: number }> = []
+    for (const [index, row] of contentRows.entries()) {
+      candidates.push({ chunk: rowToChunk(row), base: 1 - index / Math.max(1, contentRows.length) })
     }
     const results: MemorySearchResult[] = []
     for (const { chunk, base } of candidates) {
@@ -202,7 +233,7 @@ export class MarkdownMemoryService extends MemoryService {
     if (bounded.length > 0) this._bumpAccess(bounded)
     return {
       results: bounded,
-      total: candidates.length,
+      total: contentRows.length,
     }
   }
 
@@ -255,6 +286,40 @@ export class MarkdownMemoryService extends MemoryService {
       .map(rowToChunk)
       .filter(chunk => !isContentFree(chunk.text, chunk.source))
       .slice(0, request.maxChunks)
+  }
+
+  /** Archive a substantial session to the sessions directory at each durable flush. */
+  private async _archiveOnFlush(session: Session): Promise<void> {
+    if (!this._resolved.saveOnEnd) return
+    if (session.header.origin === 'subagent') return
+    const events = session.events
+    const queries = realUserQueryTexts(events)
+    if (!meetsSessionArchiveGate(queries)) return
+    const counts = archiveMessageCounts(events)
+    const sid8 = sessionArchiveSid8(session.id)
+    /* v8 ignore next -- the gate guarantees at least three queries, and an empty first query falls back to the slug default */
+    const slug = slugify(queries[0] ?? '', MEMORY_ARCHIVE_SLUG_MAX_CHARS) || 'session'
+    const { date, stamp } = archiveDateParts(session.header.createdAt)
+    const card = renderArchiveCard(stamp, counts, queries.slice(0, MEMORY_ARCHIVE_MAX_TOPICS))
+    let path: MemoryPathValue
+    try {
+      path = MemoryPath('session', 'sessions', sessionArchiveName(date, slug, sid8))
+    } catch (error) {
+      /* v8 ignore start -- a slug, date, and hex suffix always match the archive name contract */
+      this.ctx.logger.warn(`memory: session "${session.id}" archive name rejected: ${String(error)}`)
+      return
+      /* v8 ignore stop */
+    }
+    try {
+      const absolute = absolutePath(this._layout, path)
+      await writeMemoryFile(absolute, card)
+      this._files.set(absolute, { path, absolute, content: card })
+      this._reindex(absolute)
+    } catch (error) {
+      /* v8 ignore start -- an unwritable sessions directory cannot be exercised without a read-only mount */
+      this.ctx.logger.warn(`memory: session "${session.id}" archive write failed: ${String(error)}`)
+      /* v8 ignore stop */
+    }
   }
 
   private async _loadFile(path: MemoryPathValue): Promise<FileState> {
@@ -578,6 +643,7 @@ function resolveConfig(config: Config): ResolvedConfig {
     workspace: config.workspace,
     dshHome,
     path,
+    saveOnEnd: config.session?.saveOnEnd ?? MEMORY_MARKDOWN_DEFAULT_SAVE_ON_END,
   }
 }
 
