@@ -433,6 +433,92 @@ describe('MarkdownMemoryService', () => {
     }
   })
 
+  it('preserves chunk access counts across reindexes of unchanged content', async () => {
+    const ctx = await mount(await temporaryPath())
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      const content = '# Project memory\n\nDeployment convention: pin Node LTS.'
+      await ctx.memory.write(global, content)
+      await ctx.memory.search({ query: 'Deployment convention' })
+      const service = ctx.memory as unknown as MarkdownMemoryService
+      const db = service['_db']!
+      const accessBefore = (db.prepare('SELECT access_count FROM chunks WHERE path = ?')
+        .get(global) as { access_count: number }).access_count
+      expect(accessBefore).toBeGreaterThan(0)
+
+      await ctx.memory.write(global, content)
+      const accessAfter = (db.prepare('SELECT access_count FROM chunks WHERE path = ?')
+        .get(global) as { access_count: number }).access_count
+      expect(accessAfter).toBe(accessBefore)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps content-free chunks out of search results', async () => {
+    const ctx = await mount(await temporaryPath())
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      await ctx.memory.write(global, '# Project memory\n\nThis file is managed by the harness.')
+      const hits = await ctx.memory.search({ query: 'managed' })
+      expect(hits.results).toEqual([])
+      expect(hits.total).toBe(0)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('injects real chunks ahead of content-free ones within the result cap', async () => {
+    const ctx = await mount(await temporaryPath())
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      const workspace = MemoryPath('workspace', 'MEMORY.md')
+      await ctx.memory.write(global, '# Project memory\n\nThis file is managed by the harness.')
+      await ctx.memory.write(workspace, '# Workspace memory\n\nDeployment convention: pin Node LTS.')
+      const service = ctx.memory as unknown as MarkdownMemoryService
+      const db = service['_db']!
+      db.prepare('UPDATE chunks SET access_count = 5 WHERE path = ?').run(global)
+
+      const injected = await ctx.memory.inject({ maxChunks: 1 })
+      expect(injected.map(chunk => chunk.path)).toEqual([workspace])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('surfaces durable access metadata through readChunks', async () => {
+    const ctx = await mount(await temporaryPath())
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      await ctx.memory.write(global, '# Project memory\n\nDeployment convention: pin Node LTS.')
+      await ctx.memory.search({ query: 'Deployment convention' })
+      const chunks = await ctx.memory.readChunks(global)
+      expect(chunks.some(chunk => chunk.accessCount > 0)).toBe(true)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('reads chunks from the file when the index is never opened', async () => {
+    const root = await temporaryPath()
+    const ctx = new Context()
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'never',
+    })
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      await ctx.memory.write(global, '# Project memory\n\nDeployment convention: pin Node LTS.')
+      const chunks = await ctx.memory.readChunks(global)
+      expect(chunks.length).toBeGreaterThan(0)
+      expect(chunks.some(chunk => chunk.accessCount === 0)).toBe(true)
+      await expect(ctx.memory.search({ query: 'Deployment convention' })).rejects.toThrow(/search is disabled/)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('rejects reading a missing file and invalid search bounds', async () => {
     const ctx = await mount(await temporaryPath())
     try {

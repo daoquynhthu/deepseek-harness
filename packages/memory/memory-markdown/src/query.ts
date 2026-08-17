@@ -106,7 +106,7 @@ export function keywordScan(
     WHERE ${whereSql}
     ORDER BY rank
     LIMIT ?
-  `).all(...params, limit + 1) as unknown as IndexedChunkRow[]
+  `).all(...params, limit) as unknown as IndexedChunkRow[]
   const total = (db.prepare(`
     SELECT COUNT(*) AS count
     FROM chunks_fts
@@ -114,7 +114,7 @@ export function keywordScan(
     WHERE ${whereSql}
   `).get(...params) as { count: number }).count
   return {
-    rows: rows.slice(0, limit),
+    rows,
     total,
     matches: keywords,
   }

@@ -73,7 +73,7 @@ export interface MemorySearchResult {
 /** Page of memory search results. */
 export interface MemorySearchPage {
   readonly results: readonly MemorySearchResult[]
-  /** Total matched chunk count before the result cap. */
+  /** Total content-bearing matched chunk count before the result cap. */
   readonly total: number
 }
 

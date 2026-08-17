@@ -1,5 +1,5 @@
 /**
- * Hybrid search scoring: temporal decay, source weights, access boost, and
+ * Keyword search scoring: temporal decay, source weights, access boost, and
  * content-free chunk filtering.
  *
  * @module @deepseek-ai/dsh-memory

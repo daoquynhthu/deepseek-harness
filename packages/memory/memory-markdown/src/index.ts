@@ -184,6 +184,7 @@ export class MarkdownMemoryService extends MemoryService {
     for (const [index, row] of rows.entries()) {
       const base = 1 - index / Math.max(1, rows.length)
       const chunk = rowToChunk(row)
+      if (isContentFree(chunk.text, chunk.source)) continue
       candidates.push({ chunk, base })
     }
     const results: MemorySearchResult[] = []
@@ -201,7 +202,7 @@ export class MarkdownMemoryService extends MemoryService {
     if (bounded.length > 0) this._bumpAccess(bounded)
     return {
       results: bounded,
-      total: scanned.total,
+      total: candidates.length,
     }
   }
 
@@ -249,9 +250,11 @@ export class MarkdownMemoryService extends MemoryService {
       FROM chunks
       WHERE source IN ('global', 'workspace')
       ORDER BY access_count DESC, created_at DESC
-      LIMIT ?
-    `).all(request.maxChunks) as unknown as IndexedChunkRow[]
-    return rows.map(rowToChunk).filter(chunk => !isContentFree(chunk.text, chunk.source))
+    `).all() as unknown as IndexedChunkRow[]
+    return rows
+      .map(rowToChunk)
+      .filter(chunk => !isContentFree(chunk.text, chunk.source))
+      .slice(0, request.maxChunks)
   }
 
   private async _loadFile(path: MemoryPathValue): Promise<FileState> {
@@ -396,11 +399,11 @@ export class MarkdownMemoryService extends MemoryService {
     /* v8 ignore next -- every _reindex call site loads or caches the state first */
     if (state === undefined) return
     const scope = pathScope(state.path)
-    const existingCreatedAt = new Map<string, number>()
+    const existing = new Map<string, { createdAt: number; accessCount: number }>()
     for (const row of db.prepare(
-      'SELECT id, created_at FROM chunks WHERE path = ?',
-    ).all(state.path) as Array<{ id: string; created_at: number }>) {
-      existingCreatedAt.set(row.id, row.created_at)
+      'SELECT id, created_at, access_count FROM chunks WHERE path = ?',
+    ).all(state.path) as Array<{ id: string; created_at: number; access_count: number }>) {
+      existing.set(row.id, { createdAt: row.created_at, accessCount: row.access_count })
     }
     db.prepare('DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE path = ?)').run(state.path)
     db.prepare('DELETE FROM chunks WHERE path = ?').run(state.path)
@@ -408,7 +411,7 @@ export class MarkdownMemoryService extends MemoryService {
     const chunks = chunkMarkdown(state.content, this._chunkConfig)
     const insert = db.prepare(`
       INSERT INTO chunks (id, path, start_line, end_line, text, source, access_count, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertFts = db.prepare(`
       INSERT INTO chunks_fts (text, id, source)
@@ -417,8 +420,8 @@ export class MarkdownMemoryService extends MemoryService {
     for (const chunk of chunks) {
       const id = chunkHashOf(chunk.text)
       const text = chunk.text
-      const createdAt = existingCreatedAt.get(id) ?? now
-      insert.run(id, state.path, chunk.startLine, chunk.endLine, text, scope, createdAt)
+      const prior = existing.get(id)
+      insert.run(id, state.path, chunk.startLine, chunk.endLine, text, scope, prior?.accessCount ?? 0, prior?.createdAt ?? now)
       insertFts.run(text, id, scope)
     }
   }
@@ -485,17 +488,28 @@ export class MarkdownMemoryService extends MemoryService {
   private _chunksOf(state: FileState): readonly MemoryChunk[] {
     const chunks = chunkMarkdown(state.content, this._chunkConfig)
     const scope = pathScope(state.path)
-    const createdAt = Date.now()
-    return chunks.map(chunk => ({
-      id: chunkHashOf(chunk.text) as MemoryChunkId,
-      path: state.path,
-      startLine: chunk.startLine,
-      endLine: chunk.endLine,
-      text: chunk.text,
-      source: scope,
-      accessCount: 0,
-      createdAt,
-    }))
+    const durable = new Map<string, { accessCount: number; createdAt: number }>()
+    if (this._db !== undefined) {
+      for (const row of this._db.prepare(
+        'SELECT id, access_count, created_at FROM chunks WHERE path = ?',
+      ).all(state.path) as Array<{ id: string; access_count: number; created_at: number }>) {
+        durable.set(row.id, { accessCount: row.access_count, createdAt: row.created_at })
+      }
+    }
+    return chunks.map((chunk) => {
+      const id = chunkHashOf(chunk.text) as MemoryChunkId
+      const prior = durable.get(id)
+      return {
+        id,
+        path: state.path,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        text: chunk.text,
+        source: scope,
+        accessCount: prior?.accessCount ?? 0,
+        createdAt: prior?.createdAt ?? Date.now(),
+      }
+    })
   }
 }
 
