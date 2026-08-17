@@ -1,0 +1,22 @@
+# Replay counterpart to memory-archive.cordis.yml. It includes cordis.yml directly because
+# a config patch cannot target an entry behind a nested include, then restates
+# the memory overlay while replacing the live model with keyless replay. The
+# workspace is pinned through MEMORY_WORKSPACE so the write and search processes
+# resolve the same workspace-scoped session archive directory.
+- id: base
+  name: '@deepseek-ai/cordis-plugin-include'
+  config:
+    path: ./cordis.yml
+    patches:
+      - id: llm-deepseek
+        name: '@deepseek-ai/dsh-llm-deepseek'
+        disabled: true
+      - insert:
+          - id: memory-markdown
+            name: '@deepseek-ai/dsh-memory-markdown'
+            config:
+              workspace: !!js process.env.MEMORY_WORKSPACE
+          - id: tool-memory
+            name: '@deepseek-ai/dsh-tool-memory'
+          - id: llm-replay
+            name: '@deepseek-ai/dsh-llm-replay'

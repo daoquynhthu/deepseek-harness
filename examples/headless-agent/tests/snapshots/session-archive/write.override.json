@@ -1,0 +1,32 @@
+[
+  {
+    "kind": "chunks",
+    "chunks": [
+      { "type": "block-start", "index": 0, "blockType": "text" },
+      { "type": "text-delta", "index": 0, "text": "CONVENTION DOCUMENTED" },
+      { "type": "block-end", "index": 0, "block": { "type": "text", "text": "CONVENTION DOCUMENTED" } },
+      { "type": "usage", "usage": { "inputTokens": 12, "outputTokens": 3 } },
+      { "type": "finish", "reason": { "kind": "stop" } }
+    ]
+  },
+  {
+    "kind": "chunks",
+    "chunks": [
+      { "type": "block-start", "index": 0, "blockType": "text" },
+      { "type": "text-delta", "index": 0, "text": "ARTIFACTS RECORDED" },
+      { "type": "block-end", "index": 0, "block": { "type": "text", "text": "ARTIFACTS RECORDED" } },
+      { "type": "usage", "usage": { "inputTokens": 12, "outputTokens": 3 } },
+      { "type": "finish", "reason": { "kind": "stop" } }
+    ]
+  },
+  {
+    "kind": "chunks",
+    "chunks": [
+      { "type": "block-start", "index": 0, "blockType": "text" },
+      { "type": "text-delta", "index": 0, "text": "ROLLBACKS NOTED" },
+      { "type": "block-end", "index": 0, "block": { "type": "text", "text": "ROLLBACKS NOTED" } },
+      { "type": "usage", "usage": { "inputTokens": 12, "outputTokens": 3 } },
+      { "type": "finish", "reason": { "kind": "stop" } }
+    ]
+  }
+]

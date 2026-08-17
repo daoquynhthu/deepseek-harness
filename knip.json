@@ -451,6 +451,33 @@
         "tests/**/*.ts"
       ]
     },
+    "packages/memory/memory": {
+      "entry": [
+        "tests/**/*.spec.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "tests/**/*.ts"
+      ]
+    },
+    "packages/memory/memory-markdown": {
+      "entry": [
+        "tests/**/*.spec.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "tests/**/*.ts"
+      ]
+    },
+    "packages/memory/tool-memory": {
+      "entry": [
+        "tests/**/*.spec.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "tests/**/*.ts"
+      ]
+    },
     "packages/code-runtime/code-runtime-worker-thread": {
       "entry": [
         "tests/**/*.spec.ts",

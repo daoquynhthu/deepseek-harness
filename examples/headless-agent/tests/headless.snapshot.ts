@@ -1,6 +1,7 @@
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -18,6 +19,7 @@ import {
   decompressZstdFrame,
   scanZstdFrames,
 } from '@deepseek-ai/dsh-session-persistence-jsonl/src/zstd.ts'
+import { workspaceHashOf } from '@deepseek-ai/dsh-memory-markdown/src/layout.ts'
 import { describe, expect, it } from 'vitest'
 
 const snapshotsDir = join(dirname(fileURLToPath(import.meta.url)), 'snapshots')
@@ -47,9 +49,18 @@ const ralphScenarioDir = join(snapshotsDir, 'ralph-loop')
 const ralphConfigPath = fileURLToPath(new URL('../ralph.cordis.snapshot.yml', import.meta.url))
 const settlementScenarioDir = join(snapshotsDir, 'subagent-settlement')
 const settlementConfigPath = fileURLToPath(new URL('../subagent-settlement.cordis.snapshot.yml', import.meta.url))
+const memoryScenarioDir = join(snapshotsDir, 'memory-persist')
+const memoryWriteStreamExpected = join(memoryScenarioDir, 'write.stream-json.expected.jsonl')
+const memorySearchStreamExpected = join(memoryScenarioDir, 'search.stream-json.expected.jsonl')
+const memoryConfigPath = fileURLToPath(new URL('../memory.cordis.snapshot.yml', import.meta.url))
+const archiveScenarioDir = join(snapshotsDir, 'session-archive')
+const archiveWriteStreamExpected = join(archiveScenarioDir, 'write.stream-json.expected.jsonl')
+const archiveSearchStreamExpected = join(archiveScenarioDir, 'search.stream-json.expected.jsonl')
+const archiveConfigPath = fileURLToPath(new URL('../memory-archive.cordis.snapshot.yml', import.meta.url))
 const startupFailureConfigPath = fileURLToPath(new URL('./fixtures/startup-activation-error/cordis.yml', import.meta.url))
 const startupFailureExpected = join(snapshotsDir, 'startup-activation-error', 'stderr.expected.txt')
 const binScript = fileURLToPath(new URL('./fixtures/headless-driver.ts', import.meta.url))
+const multiBinScript = fileURLToPath(new URL('./fixtures/headless-multi-driver.ts', import.meta.url))
 const dshBinScript = fileURLToPath(new URL('../../../apps/cli/src/bin.ts', import.meta.url))
 const tsconfigPath = fileURLToPath(new URL('../../../tsconfig.json', import.meta.url))
 const reasoningConfigPath = fileURLToPath(new URL('./fixtures/cli.cordis.yml', import.meta.url))
@@ -126,7 +137,7 @@ function contextFromLogs(contents: readonly string[]): NormalizeContext {
   }
 }
 
-function normalizeHeadlessStream(rawStdout: string, cwd: string): string {
+function normalizeHeadlessStream(rawStdout: string, cwd: string, cwdAliases: string[] = []): string {
   const records = parseJsonl(rawStdout)
   if (records.length === 0) throw new Error('headless snapshot emitted no stream-json records')
   const final = records.at(-1)
@@ -137,7 +148,7 @@ function normalizeHeadlessStream(rawStdout: string, cwd: string): string {
 
   const sessionIds = [...new Set(records.flatMap(record => typeof record.sessionId === 'string' ? [record.sessionId] : []))]
   if (sessionIds.length !== 1) throw new Error(`headless snapshot streamed ${sessionIds.length} main session ids`)
-  const context: NormalizeContext = { sessionIds, cwd }
+  const context: NormalizeContext = { sessionIds, cwd, cwdAliases }
   const events = records.slice(0, -1).map((record) => {
     if (record.event === null || typeof record.event !== 'object' || Array.isArray(record.event)) {
       throw new Error('headless snapshot emitted an invalid session event')
@@ -152,6 +163,14 @@ function normalizeHeadlessStream(rawStdout: string, cwd: string): string {
     ? { ...record, event: normalizedEvents[index] }
     : record)
   return normalizeStdout(`${normalizedRecords.map(record => JSON.stringify(record)).join('\n')}\n`, context)
+}
+
+/** Normalize a session-archive stream: shared headless scrubbers plus the archive's volatile date and session-id hash. */
+function normalizeArchiveStream(rawStdout: string, cwd: string, cwdAliases: string[] = []): string {
+  return normalizeHeadlessStream(rawStdout, cwd, cwdAliases)
+    .replace(/sessions\/\d{4}-\d{2}-\d{2}-/g, 'sessions/DATE-')
+    .replace(/- \*\*Date:\*\* \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/g, '- **Date:** DATE UTC')
+    .replace(/-\b[0-9a-f]{8}\.md/g, '-SID8.md')
 }
 
 /** Zero durable goal timestamps inside both metadata records and rendered XML JSON. */
@@ -902,4 +921,192 @@ describe('headless stream-json snapshots', () => {
     if (refreshing) await writeFile(ptyStreamExpected, normalized)
     expect(normalized).toBe(await readFile(ptyStreamExpected, 'utf8'))
   }, LOADER_SMOKE_TEST_TIMEOUT_MS)
+
+  it('persists curated memory across fresh sessions', async () => {
+    const input = JSON.parse(await readFile(join(memoryScenarioDir, 'input.json'), 'utf8')) as {
+      steps?: { op?: unknown; text?: unknown }[]
+    }
+    const prompts = input.steps?.filter(step => step.op === 'prompt').map(step => step.text)
+    const writePrompt = prompts?.[0]
+    const searchPrompt = prompts?.[1]
+    if (typeof writePrompt !== 'string' || typeof searchPrompt !== 'string') {
+      throw new Error('memory-persist input has no two prompt steps')
+    }
+    // The memory root defaults to `$DSH_HOME/memory`; both runs resolve it to
+    // this shared temp home so the second fresh session sees the first write.
+    const sharedHome = await mkdtemp(join(tmpdir(), 'dsh-snapshot-memory-'))
+    try {
+      let writeCwd = ''
+      const writeResult = await runLoaderSmoke({
+        label: 'memory write headless stream-json snapshot',
+        tempDirPrefix: 'headless-snapshot-memory-write-',
+        binScript,
+        libBinScript: binScript,
+        configPath: memoryConfigPath,
+        binArgs: [memoryConfigPath, writePrompt],
+        tsconfigPath,
+        env: {
+          DSH_HOME: sharedHome,
+          DSH_SNAPSHOT: 'replay',
+          DSH_SNAPSHOT_FILE: join(memoryScenarioDir, 'session.jsonl'),
+          DSH_SNAPSHOT_OVERRIDE: join(memoryScenarioDir, 'write.override.json'),
+          NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        },
+        prepare: (cwd) => { writeCwd = cwd },
+        inspect: async (cwd) => {
+          const logs = await persistedLogs(cwd)
+          expect(logs).toHaveLength(1)
+          const records = parseJsonl(logs[0]?.content ?? '')
+          const calls = records.filter(record => record.type === 'tool/call')
+            .map(record => (record.data as JsonObject | undefined)?.name)
+          expect(calls).toEqual(['memory_set'])
+          expect(await readFile(join(sharedHome, 'memory', 'MEMORY.md'), 'utf8'))
+            .toContain('Deployment convention: run the release checklist in CI, never locally.')
+        },
+      })
+
+      expect(writeResult.stderr).toBe('')
+      const writeNormalized = normalizeHeadlessStream(writeResult.stdout, writeCwd, [sharedHome])
+      if (refreshing) await writeFile(memoryWriteStreamExpected, writeNormalized)
+      expect(writeNormalized).toBe(await readFile(memoryWriteStreamExpected, 'utf8'))
+
+      let searchCwd = ''
+      const searchResult = await runLoaderSmoke({
+        label: 'memory search headless stream-json snapshot',
+        tempDirPrefix: 'headless-snapshot-memory-search-',
+        binScript,
+        libBinScript: binScript,
+        configPath: memoryConfigPath,
+        binArgs: [memoryConfigPath, searchPrompt],
+        tsconfigPath,
+        env: {
+          DSH_HOME: sharedHome,
+          DSH_SNAPSHOT: 'replay',
+          DSH_SNAPSHOT_FILE: join(memoryScenarioDir, 'session.jsonl'),
+          DSH_SNAPSHOT_OVERRIDE: join(memoryScenarioDir, 'search.override.json'),
+          NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        },
+        prepare: (cwd) => { searchCwd = cwd },
+        inspect: async (cwd) => {
+          const logs = await persistedLogs(cwd)
+          expect(logs).toHaveLength(1)
+          const records = parseJsonl(logs[0]?.content ?? '')
+          const injected = records.find((record) => {
+            if (record.type !== 'user/message') return false
+            const message = record.data as JsonObject | undefined
+            const source = message?.source as JsonObject | undefined
+            const sections = source?.sections as JsonObject[] | undefined
+            return sections?.[0]?.name === 'Project memory'
+          })
+          expect(injected).toBeDefined()
+          const calls = records.filter(record => record.type === 'tool/call')
+            .map(record => (record.data as JsonObject | undefined)?.name)
+          expect(calls).toEqual(['memory_search'])
+          const searchResultRecord = records.find(record => record.type === 'tool/result')
+          expect(JSON.stringify(searchResultRecord?.data)).toContain(
+            'Deployment convention: run the release checklist in CI, never locally.',
+          )
+        },
+      })
+
+      expect(searchResult.stderr).toBe('')
+      const searchNormalized = normalizeHeadlessStream(searchResult.stdout, searchCwd, [sharedHome])
+      if (refreshing) await writeFile(memorySearchStreamExpected, searchNormalized)
+      expect(searchNormalized).toBe(await readFile(memorySearchStreamExpected, 'utf8'))
+    } finally {
+      await rm(sharedHome, { recursive: true, force: true })
+    }
+  }, 2 * LOADER_SMOKE_TEST_TIMEOUT_MS)
+
+  it('archives a substantial session and recalls it across fresh processes', async () => {
+    const input = JSON.parse(await readFile(join(archiveScenarioDir, 'input.json'), 'utf8')) as {
+      steps?: { op?: unknown; text?: unknown }[]
+    }
+    const writePrompts = input.steps?.filter(step => step.op === 'prompt').map(step => step.text)
+      .filter((text): text is string => typeof text === 'string')
+    const searchPrompt = input.steps?.filter(step => step.op === 'search').map(step => step.text)[0]
+    if (writePrompts?.length !== 3 || typeof searchPrompt !== 'string') {
+      throw new Error('session-archive input has no three prompt steps and one search step')
+    }
+    // The memory root defaults to `$DSH_HOME/memory` and session archives are
+    // workspace-scoped, so both runs pin the same workspace through
+    // MEMORY_WORKSPACE to share the archive written by the write process.
+    const sharedHome = await mkdtemp(join(tmpdir(), 'dsh-snapshot-archive-'))
+    const memoryWorkspace = join(sharedHome, 'work')
+    try {
+      let writeCwd = ''
+      const writeResult = await runLoaderSmoke({
+        label: 'session archive write headless stream-json snapshot',
+        tempDirPrefix: 'headless-snapshot-archive-write-',
+        binScript: multiBinScript,
+        libBinScript: multiBinScript,
+        configPath: archiveConfigPath,
+        binArgs: [archiveConfigPath, ...writePrompts],
+        tsconfigPath,
+        env: {
+          DSH_HOME: sharedHome,
+          MEMORY_WORKSPACE: memoryWorkspace,
+          DSH_SNAPSHOT: 'replay',
+          DSH_SNAPSHOT_FILE: join(archiveScenarioDir, 'session.jsonl'),
+          DSH_SNAPSHOT_OVERRIDE: join(archiveScenarioDir, 'write.override.json'),
+          NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        },
+        prepare: (cwd) => { writeCwd = cwd },
+        inspect: async () => {
+          const archiveDir = join(sharedHome, 'memory', workspaceHashOf(memoryWorkspace), 'sessions')
+          const entries = await readdir(archiveDir)
+          const archives = entries.filter(entry => /^\d{4}-\d{2}-\d{2}-[a-z0-9-]+-[a-z0-9]{8}\.md$/.test(entry))
+          expect(archives).toHaveLength(1)
+          const archive = archives[0]
+          if (archive === undefined) throw new Error('session archive write snapshot persisted no archive')
+          const card = await readFile(join(archiveDir, archive), 'utf8')
+          expect(card).toContain('- **Messages:** 3 user, 3 assistant, 0 tool results')
+          expect(card).toContain('Document the deployment convention')
+        },
+      })
+
+      expect(writeResult.stderr).toBe('')
+      const writeNormalized = normalizeArchiveStream(writeResult.stdout, writeCwd, [sharedHome, memoryWorkspace])
+      if (refreshing) await writeFile(archiveWriteStreamExpected, writeNormalized)
+      expect(writeNormalized).toBe(await readFile(archiveWriteStreamExpected, 'utf8'))
+
+      let searchCwd = ''
+      const searchResult = await runLoaderSmoke({
+        label: 'session archive search headless stream-json snapshot',
+        tempDirPrefix: 'headless-snapshot-archive-search-',
+        binScript,
+        libBinScript: binScript,
+        configPath: archiveConfigPath,
+        binArgs: [archiveConfigPath, searchPrompt],
+        tsconfigPath,
+        env: {
+          DSH_HOME: sharedHome,
+          MEMORY_WORKSPACE: memoryWorkspace,
+          DSH_SNAPSHOT: 'replay',
+          DSH_SNAPSHOT_FILE: join(archiveScenarioDir, 'session.jsonl'),
+          DSH_SNAPSHOT_OVERRIDE: join(archiveScenarioDir, 'search.override.json'),
+          NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        },
+        prepare: (cwd) => { searchCwd = cwd },
+        inspect: async (cwd) => {
+          const logs = await persistedLogs(cwd)
+          expect(logs).toHaveLength(1)
+          const records = parseJsonl(logs[0]?.content ?? '')
+          const calls = records.filter(record => record.type === 'tool/call')
+            .map(record => (record.data as JsonObject | undefined)?.name)
+          expect(calls).toEqual(['memory_search'])
+          const searchResultRecord = records.find(record => record.type === 'tool/result')
+          expect(JSON.stringify(searchResultRecord?.data)).toContain('path: sessions/')
+          expect(JSON.stringify(searchResultRecord?.data)).toContain('- **Messages:** 3 user, 3 assistant, 0 tool results')
+        },
+      })
+
+      expect(searchResult.stderr).toBe('')
+      const searchNormalized = normalizeArchiveStream(searchResult.stdout, searchCwd, [sharedHome, memoryWorkspace])
+      if (refreshing) await writeFile(archiveSearchStreamExpected, searchNormalized)
+      expect(searchNormalized).toBe(await readFile(archiveSearchStreamExpected, 'utf8'))
+    } finally {
+      await rm(sharedHome, { recursive: true, force: true })
+    }
+  }, 2 * LOADER_SMOKE_TEST_TIMEOUT_MS)
 })

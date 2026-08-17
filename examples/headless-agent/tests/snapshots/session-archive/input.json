@@ -1,0 +1,20 @@
+{
+  "steps": [
+    {
+      "op": "prompt",
+      "text": "Document the deployment convention: the release checklist runs in CI, never locally."
+    },
+    {
+      "op": "prompt",
+      "text": "Record where deployment artifacts are published after the CI release checklist passes."
+    },
+    {
+      "op": "prompt",
+      "text": "Note that production rollbacks require two approvals before they are allowed."
+    },
+    {
+      "op": "search",
+      "text": "What is the deployment convention recorded in the earlier session?"
+    }
+  ]
+}

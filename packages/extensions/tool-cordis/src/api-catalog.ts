@@ -888,6 +888,55 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'memory',
+    summary: 'Unified cross-session memory service.',
+    description: 'Unified cross-session memory service.\n\nSearch, read, write, and list are backend-independent concrete contracts; a backend implements storage, indexing, and retrieval on the same `ctx.memory` service.',
+    methods: [
+      {
+        signature: 'readonly config: MemoryServiceConfig',
+        description: 'Validated service configuration shared by every backend operation.',
+        parameters: [],
+      },
+      {
+        signature: 'abstract search(request: MemorySearchRequest): Promise<MemorySearchPage>',
+        description: 'Search curated memory with the FTS keyword pipeline.',
+        parameters: [{ name: 'request', description: 'query, optional scope/limit/min-score overrides, cancellation.' }],
+        returns: 'ranked results with per-result mode and coverage metadata.',
+      },
+      {
+        signature: 'abstract read(path: MemoryPath): Promise<string>',
+        description: 'Read the current content of one memory file.',
+        parameters: [{ name: 'path', description: 'branded memory file path.' }],
+        returns: 'the file\'s full text.',
+        throws: ['{@link MemoryError} `MEMORY_FILE_NOT_FOUND` when absent.'],
+      },
+      {
+        signature: 'abstract write(path: MemoryPath, content: string): Promise<void>',
+        description: 'Write one memory file, replacing existing content atomically.',
+        parameters: [{ name: 'path', description: 'branded memory file path.' }, { name: 'content', description: 'new full text content.' }],
+      },
+      {
+        signature: 'abstract list(): Promise<readonly MemoryFile[]>',
+        description: 'List known memory files with size and modification metadata.',
+        parameters: [],
+        returns: 'files in deterministic order.',
+      },
+      {
+        signature: 'abstract readChunks(path: MemoryPath): Promise<readonly MemoryChunk[]>',
+        description: 'Return the chunks of one memory file, refreshed from durable state.',
+        parameters: [{ name: 'path', description: 'branded memory file path.' }],
+        returns: 'current chunks in document order.',
+        throws: ['{@link MemoryError} `MEMORY_FILE_NOT_FOUND` when absent.'],
+      },
+      {
+        signature: 'abstract inject(request: MemoryInjectRequest): Promise<readonly MemoryChunk[]>',
+        description: 'Return top evergreen chunks for session-start injection.',
+        parameters: [{ name: 'request', description: 'maximum chunk count and optional cancellation.' }],
+        returns: 'evergreen chunks ranked for injection, content-free chunks excluded.',
+      },
+    ],
+  },
+  {
     key: 'messageFeedback',
     summary: 'Storage-domain sidecar service.',
     description: 'Storage-domain sidecar service. It inspects persisted Session history and never creates or resumes an Agent or Session.',
@@ -3368,6 +3417,50 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ManualCompactAgentContext extends CompactionAgentContext {\n    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;\n}',
   },
   {
+    name: 'MemoryChunk',
+    declaration: 'export interface MemoryChunk {\n    readonly id: MemoryChunkId;\n    readonly path: MemoryPath;\n    readonly startLine: number;\n    readonly endLine: number;\n    readonly text: string;\n    readonly source: MemoryScope;\n    readonly accessCount: number;\n    readonly createdAt: number;\n}',
+  },
+  {
+    name: 'MemoryChunkId',
+    declaration: 'export type MemoryChunkId = Branded<\'MemoryChunkId\'>;',
+  },
+  {
+    name: 'MemoryFile',
+    declaration: 'export interface MemoryFile {\n    readonly path: MemoryPath;\n    readonly scope: MemoryScope;\n    readonly sizeBytes: number;\n    readonly modifiedAt: number;\n}',
+  },
+  {
+    name: 'MemoryInjectRequest',
+    declaration: 'export interface MemoryInjectRequest {\n    readonly maxChunks: number;\n    readonly signal?: AbortSignal;\n}',
+  },
+  {
+    name: 'MemoryRetrievalMode',
+    declaration: 'export type MemoryRetrievalMode = \'fts-only\' | \'hybrid\' | \'embedding-fallback\';',
+  },
+  {
+    name: 'MemoryScope',
+    declaration: 'export type MemoryScope = \'global\' | \'workspace\' | \'session\';',
+  },
+  {
+    name: 'MemorySearchConfig',
+    declaration: 'export interface MemorySearchConfig {\n    readonly maxResults: number;\n    readonly minScore: number;\n    readonly temporalDecay: TemporalDecayConfig;\n    readonly sourceWeights: Readonly<Record<MemoryScope, number>>;\n    readonly candidateMultiplier: number;\n}',
+  },
+  {
+    name: 'MemorySearchPage',
+    declaration: 'export interface MemorySearchPage {\n    readonly results: readonly MemorySearchResult[];\n    readonly total: number;\n}',
+  },
+  {
+    name: 'MemorySearchRequest',
+    declaration: 'export interface MemorySearchRequest {\n    readonly query: string;\n    readonly scope?: MemoryScope;\n    readonly limit?: number;\n    readonly minScore?: number;\n    readonly signal?: AbortSignal;\n}',
+  },
+  {
+    name: 'MemorySearchResult',
+    declaration: 'export interface MemorySearchResult {\n    readonly chunk: MemoryChunk;\n    readonly score: number;\n    readonly snippet: string;\n    readonly mode: MemoryRetrievalMode;\n}',
+  },
+  {
+    name: 'MemoryServiceConfig',
+    declaration: 'export class MemoryServiceConfig {\n    readonly search: MemorySearchConfig;\n    readonly sourceWeights: Readonly<Record<MemoryScope, number>>;\n    constructor(config: Config = {});\n}',
+  },
+  {
     name: 'Message',
     declaration: 'export interface Message {\n    readonly id: MessageId;\n    readonly role: \'system\' | \'user\' | \'assistant\';\n    readonly content: ContentBlock[];\n    readonly source: MessageSource;\n}',
   },
@@ -4250,6 +4343,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'TableValueOf',
     declaration: 'export type TableValueOf<S extends DomainSpec, N extends keyof S[\'tables\']> = S[\'tables\'][N] extends DomainTableSpec<string, infer V> ? V : never;',
+  },
+  {
+    name: 'TemporalDecayConfig',
+    declaration: 'export interface TemporalDecayConfig {\n    readonly enabled: boolean;\n    readonly halfLifeDays: number;\n}',
   },
   {
     name: 'TerminalBackend',

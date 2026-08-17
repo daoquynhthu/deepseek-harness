@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "chunks",
+    "chunks": [
+      { "type": "block-start", "index": 0, "blockType": "tool-call" },
+      { "type": "tool-call-delta", "index": 0, "id": "call_memory_set", "name": "memory_set", "argumentsDelta": "{\"path\":\"MEMORY.md\",\"content\":\"# Project memory\\n\\nDeployment convention: run the release checklist in CI, never locally.\\n\"}" },
+      { "type": "block-end", "index": 0, "block": { "type": "tool-call", "id": "call_memory_set", "name": "memory_set", "arguments": "{\"path\":\"MEMORY.md\",\"content\":\"# Project memory\\n\\nDeployment convention: run the release checklist in CI, never locally.\\n\"}" } },
+      { "type": "usage", "usage": { "inputTokens": 15, "outputTokens": 6 } },
+      { "type": "finish", "reason": { "kind": "tool-calls" } }
+    ]
+  },
+  {
+    "kind": "chunks",
+    "chunks": [
+      { "type": "block-start", "index": 0, "blockType": "text" },
+      { "type": "text-delta", "index": 0, "text": "MEMORY WRITTEN" },
+      { "type": "block-end", "index": 0, "block": { "type": "text", "text": "MEMORY WRITTEN" } },
+      { "type": "usage", "usage": { "inputTokens": 20, "outputTokens": 2 } },
+      { "type": "finish", "reason": { "kind": "stop" } }
+    ]
+  }
+]

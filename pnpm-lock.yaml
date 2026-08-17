@@ -536,6 +536,12 @@ importers:
       '@deepseek-ai/dsh-lsp-stdio':
         specifier: workspace:*
         version: link:../packages/lsp/lsp-stdio
+      '@deepseek-ai/dsh-memory':
+        specifier: workspace:*
+        version: link:../packages/memory/memory
+      '@deepseek-ai/dsh-memory-markdown':
+        specifier: workspace:*
+        version: link:../packages/memory/memory-markdown
       '@deepseek-ai/dsh-permission-presets':
         specifier: workspace:*
         version: link:../packages/interaction/permission-presets
@@ -686,6 +692,9 @@ importers:
       '@deepseek-ai/dsh-tool-lsp':
         specifier: workspace:*
         version: link:../packages/lsp/tool-lsp
+      '@deepseek-ai/dsh-tool-memory':
+        specifier: workspace:*
+        version: link:../packages/memory/tool-memory
       '@deepseek-ai/dsh-tool-pwsh':
         specifier: workspace:*
         version: link:../packages/shell/tool-pwsh
@@ -5515,6 +5524,71 @@ importers:
       '@modelcontextprotocol/server-filesystem':
         specifier: ^2026.7.4
         version: 2026.7.10(zod@4.4.3)
+
+  packages/memory/memory:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-brand':
+        specifier: workspace:^
+        version: link:../../util/brand
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+
+  packages/memory/memory-markdown:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-brand':
+        specifier: workspace:^
+        version: link:../../util/brand
+      '@deepseek-ai/dsh-home-paths':
+        specifier: workspace:^
+        version: link:../../util/home-paths
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-memory':
+        specifier: workspace:^
+        version: link:../memory
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+
+  packages/memory/tool-memory:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: workspace:^
+        version: link:../../core/agent
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../../llm/llm
+      '@deepseek-ai/dsh-memory':
+        specifier: workspace:^
+        version: link:../memory
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: workspace:^
+        version: link:../../core/system-prompt
+      '@deepseek-ai/dsh-tools':
+        specifier: workspace:^
+        version: link:../../core/tools
 
   packages/plan/plan-mode:
     dependencies:
