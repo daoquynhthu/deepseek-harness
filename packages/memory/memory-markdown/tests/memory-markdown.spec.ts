@@ -36,15 +36,16 @@ async function temporaryPath(name = 'memory'): Promise<string> {
 
 describe('layout', () => {
   it('resolves roots, workspace hash, and scoped file paths', () => {
-    const root = 'C:/memory-root'
-    const layout = resolveMemoryLayout('C:/work/alpha', root, undefined)
-    const hash = workspaceHashOf('C:/work/alpha')
-    expect(layout.root).toBe(join('C:/memory-root'))
-    expect(layout.globalDir).toBe(join('C:/memory-root'))
-    expect(layout.globalMemoryFile).toBe(join('C:/memory-root', 'MEMORY.md'))
-    expect(layout.workspaceDir).toBe(join('C:/memory-root', hash))
-    expect(layout.workspaceMemoryFile).toBe(join('C:/memory-root', hash, 'MEMORY.md'))
-    expect(layout.sessionsDir).toBe(join('C:/memory-root', hash, 'sessions'))
+    const root = join(tmpdir(), 'memory-root')
+    const workspace = join(tmpdir(), 'work-alpha')
+    const layout = resolveMemoryLayout(workspace, root, undefined)
+    const hash = workspaceHashOf(workspace)
+    expect(layout.root).toBe(root)
+    expect(layout.globalDir).toBe(root)
+    expect(layout.globalMemoryFile).toBe(join(root, 'MEMORY.md'))
+    expect(layout.workspaceDir).toBe(join(root, hash))
+    expect(layout.workspaceMemoryFile).toBe(join(root, hash, 'MEMORY.md'))
+    expect(layout.sessionsDir).toBe(join(root, hash, 'sessions'))
     expect(hash).toMatch(/^[0-9a-f]{16}$/)
   })
 
