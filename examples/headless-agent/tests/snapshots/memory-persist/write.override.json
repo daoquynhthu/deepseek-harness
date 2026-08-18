@@ -3,8 +3,8 @@
     "kind": "chunks",
     "chunks": [
       { "type": "block-start", "index": 0, "blockType": "tool-call" },
-      { "type": "tool-call-delta", "index": 0, "id": "call_memory_set", "name": "memory_set", "argumentsDelta": "{\"path\":\"MEMORY.md\",\"content\":\"# Project memory\\n\\nDeployment convention: run the release checklist in CI, never locally.\\n\"}" },
-      { "type": "block-end", "index": 0, "block": { "type": "tool-call", "id": "call_memory_set", "name": "memory_set", "arguments": "{\"path\":\"MEMORY.md\",\"content\":\"# Project memory\\n\\nDeployment convention: run the release checklist in CI, never locally.\\n\"}" } },
+      { "type": "tool-call-delta", "index": 0, "id": "call_memory_set", "name": "memory_set", "argumentsDelta": "{\"path\":\"MEMORY.md\",\"content\":\"# Project memory\\n\\nDeployment convention: run the release checklist in CI, never locally. 发布约定：永远在 CI 运行发布清单，绝不本地发布。\\n\"}" },
+      { "type": "block-end", "index": 0, "block": { "type": "tool-call", "id": "call_memory_set", "name": "memory_set", "arguments": "{\"path\":\"MEMORY.md\",\"content\":\"# Project memory\\n\\nDeployment convention: run the release checklist in CI, never locally. 发布约定：永远在 CI 运行发布清单，绝不本地发布。\\n\"}" } },
       { "type": "usage", "usage": { "inputTokens": 15, "outputTokens": 6 } },
       { "type": "finish", "reason": { "kind": "tool-calls" } }
     ]

@@ -75,5 +75,5 @@
 
 ## Known Limitations and Deferred Work
 
-- **现装后端仅 FTS**——向量召回与混合评分是后续工作；每次检索都是 `fts-only`，零 LLM 或 embedding 调用。向量路径见跨会话记忆 Agent Note 的后续工作。
+- **现装后端仅 FTS**——向量召回与混合评分不在计划内；每次检索都是 `fts-only`，零 LLM 或 embedding 调用。超出范围的向量路径见跨会话记忆 Agent Note。
 - **无整合或遗忘**——记忆通过显式的 `memory_set` 写入与检索驱动的访问次数来策展；没有后台 "dream" 整理、文件监视器或从会话归档的自动提升。

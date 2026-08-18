@@ -6,6 +6,7 @@ import {
   MEMORY_ARCHIVE_MIN_QUERY_BYTES,
   MEMORY_ARCHIVE_MIN_USER_MESSAGES,
   archiveDateParts,
+  archiveIsExpired,
   archiveMessageCounts,
   meetsSessionArchiveGate,
   realUserQueryTexts,
@@ -138,6 +139,23 @@ describe('sessionArchiveSid8', () => {
 describe('sessionArchiveName', () => {
   it('joins the date, slug, and id suffix', () => {
     expect(sessionArchiveName('2026-08-17', 'first-query', 'deadbeef')).toBe('2026-08-17-first-query-deadbeef.md')
+  })
+})
+
+describe('archiveIsExpired', () => {
+  const cutoffMs = Date.UTC(2026, 7, 17)
+
+  it('expires a session date strictly older than the cutoff day', () => {
+    expect(archiveIsExpired('2026-08-16-first-query-deadbeef.md', cutoffMs)).toBe(true)
+  })
+
+  it('keeps a session dated on or after the cutoff day', () => {
+    expect(archiveIsExpired('2026-08-17-first-query-deadbeef.md', cutoffMs)).toBe(false)
+    expect(archiveIsExpired('2026-08-18-first-query-deadbeef.md', cutoffMs)).toBe(false)
+  })
+
+  it('never expires a name that is not a valid archive name', () => {
+    expect(archiveIsExpired('README.md', cutoffMs)).toBe(false)
   })
 })
 

@@ -38,9 +38,46 @@ const STOP_WORDS = new Set([
   'please', 'help', 'find', 'show', 'get', 'tell', 'give', 'make',
   'not', 'no', 'yes', 'also', 'too', 'very', 'really', 'here', 'there',
   'so', 'up', 'out', 'like', 'than', 'other', 'only',
+  // Curated Chinese stop words: pronouns, function words, connectives,
+  // question and request words, and time/state particles.
+  '的', '了', '是', '在', '和', '与', '及', '或', '也', '都', '有', '就',
+  '我', '你', '他', '她', '它', '们', '这', '那', '等',
+  '什么', '怎么', '为什么', '如何', '请', '帮', '做',
+  '一下', '一个', '我们', '你们', '他们', '然后', '但是', '因为', '所以',
+  '如果', '还有', '已经', '现在', '目前', '关于', '进行', '使用',
+  '应该', '需要', '是否', '可以',
 ])
 
+/** Maximal runs of CJK Han ideographs, segmented for FTS indexing. */
+const CJK_HAN_RUN = /\p{Script=Han}+/gu
+
+/** Deterministic Han word segmenter shared by the index and query sides. */
+const cjkSegmenter = new Intl.Segmenter('zh', { granularity: 'word' })
+
+/**
+ * Insert spaces between CJK Han words so the FTS5 `unicode61` tokenizer
+ * produces separate tokens for them. Non-Han text passes through verbatim,
+ * preserving ASCII identifiers and existing English tokenization. The index
+ * and query sides both run this function, so a query term always matches the
+ * tokens a chunk was indexed with.
+ * @param text - raw text to prepare for FTS tokenization.
+ * @returns the text with Han words separated by single spaces.
+ */
+export function segmentForIndex(text: string): string {
+  let output = ''
+  let cursor = 0
+  for (const match of text.matchAll(CJK_HAN_RUN)) {
+    output += text.slice(cursor, match.index)
+    const tokens: string[] = []
+    for (const segment of cjkSegmenter.segment(match[0])) tokens.push(segment.segment)
+    output += tokens.join(' ')
+    cursor = match.index + match[0].length
+  }
+  return output + text.slice(cursor)
+}
+
 /** Extract FTS keywords from a conversational query by removing stop words.
+ * CJK Han runs are segmented first so Chinese queries yield searchable terms.
  * Tokens shorter than two characters and pure-numeric tokens are dropped so
  * meaningful short terms like `js`, `ui`, `db`, `ai` survive while noise does
  * not; `_` is kept inside tokens to match identifiers like `my_function`.
@@ -48,8 +85,8 @@ const STOP_WORDS = new Set([
  * @returns deduplicated lowercase keyword terms.
  */
 export function extractKeywords(query: string): string[] {
-  const lowered = query.toLowerCase()
-  const tokens = lowered.split(/[^a-z0-9_]+/).filter(token => token.length > 1)
+  const lowered = segmentForIndex(query.toLowerCase())
+  const tokens = lowered.split(/[^\p{Script=Han}a-z0-9_]+/u).filter(token => token.length > 1)
   const seen = new Set<string>()
   const result: string[] = []
   for (const token of tokens) {

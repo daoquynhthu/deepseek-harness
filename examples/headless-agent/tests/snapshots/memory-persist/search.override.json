@@ -3,8 +3,8 @@
     "kind": "chunks",
     "chunks": [
       { "type": "block-start", "index": 0, "blockType": "tool-call" },
-      { "type": "tool-call-delta", "index": 0, "id": "call_memory_search", "name": "memory_search", "argumentsDelta": "{\"query\":\"deployment convention\"}" },
-      { "type": "block-end", "index": 0, "block": { "type": "tool-call", "id": "call_memory_search", "name": "memory_search", "arguments": "{\"query\":\"deployment convention\"}" } },
+      { "type": "tool-call-delta", "index": 0, "id": "call_memory_search", "name": "memory_search", "argumentsDelta": "{\"query\":\"deployment convention 发布约定\"}" },
+      { "type": "block-end", "index": 0, "block": { "type": "tool-call", "id": "call_memory_search", "name": "memory_search", "arguments": "{\"query\":\"deployment convention 发布约定\"}" } },
       { "type": "usage", "usage": { "inputTokens": 15, "outputTokens": 6 } },
       { "type": "finish", "reason": { "kind": "tool-calls" } }
     ]

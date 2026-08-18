@@ -75,5 +75,5 @@ Injection happens at the session start, before the model's first turn, so it joi
 
 ## Known Limitations and Deferred Work
 
-- **The shipped backend is FTS-only** — vector retrieval and hybrid scoring are deferred follow-ups; every search is `fts-only` with zero LLM or embedding calls. See the cross-session memory Agent Note's follow-ups for the deferred vector path.
+- **The shipped backend is FTS-only** — vector retrieval and hybrid scoring are not planned; every search is `fts-only` with zero LLM or embedding calls. See the cross-session memory Agent Note for the out-of-scope vector path.
 - **No consolidation or forgetting** — memory is curated by explicit `memory_set` writes and search-driven access counts; there is no background "dream" pass, file watcher, or automatic promotion from session archives.

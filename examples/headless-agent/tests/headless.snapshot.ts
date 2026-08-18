@@ -960,8 +960,9 @@ describe('headless stream-json snapshots', () => {
           const calls = records.filter(record => record.type === 'tool/call')
             .map(record => (record.data as JsonObject | undefined)?.name)
           expect(calls).toEqual(['memory_set'])
-          expect(await readFile(join(sharedHome, 'memory', 'MEMORY.md'), 'utf8'))
-            .toContain('Deployment convention: run the release checklist in CI, never locally.')
+          const memoryFile = await readFile(join(sharedHome, 'memory', 'MEMORY.md'), 'utf8')
+          expect(memoryFile).toContain('Deployment convention: run the release checklist in CI, never locally.')
+          expect(memoryFile).toContain('发布约定：永远在 CI 运行发布清单，绝不本地发布。')
         },
       })
 
@@ -1003,9 +1004,11 @@ describe('headless stream-json snapshots', () => {
             .map(record => (record.data as JsonObject | undefined)?.name)
           expect(calls).toEqual(['memory_search'])
           const searchResultRecord = records.find(record => record.type === 'tool/result')
-          expect(JSON.stringify(searchResultRecord?.data)).toContain(
+          const searchResultData = JSON.stringify(searchResultRecord?.data)
+          expect(searchResultData).toContain(
             'Deployment convention: run the release checklist in CI, never locally.',
           )
+          expect(searchResultData).toContain('发布约定：永远在 CI 运行发布清单，绝不本地发布。')
         },
       })
 

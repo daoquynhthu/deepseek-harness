@@ -32,6 +32,7 @@ const MEMORY_USER_TABLES = new Set([
   'chunks_fts_docsize',
   'chunks_fts_config',
   'chunks_vec',
+  'meta',
 ])
 
 /* jscpd:ignore-start -- deliberately mirrors the session-persistence-sqlite /
@@ -135,7 +136,34 @@ function ensureSchema(db: DatabaseSync): void {
       tokenize = 'unicode61'
     )
   `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    ) STRICT
+  `)
   db.exec(`PRAGMA user_version = ${MEMORY_SQLITE_SCHEMA_VERSION}`)
+}
+
+/**
+ * Read a `meta` key value, or `undefined` when the key is absent.
+ * @param db The open memory index database.
+ * @param key The `meta` key.
+ * @returns The stored value, or `undefined` when the key is absent.
+ */
+export function readMeta(db: DatabaseSync, key: string): string | undefined {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as { value: string } | undefined
+  return row?.value
+}
+
+/**
+ * Upsert a `meta` key value.
+ * @param db The open memory index database.
+ * @param key The `meta` key.
+ * @param value The value to store.
+ */
+export function writeMeta(db: DatabaseSync, key: string, value: string): void {
+  db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
 }
 
 function quoteIdentifier(value: string): string {

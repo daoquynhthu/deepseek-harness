@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
+import { LlmAdapter, LlmRuntime, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { MemoryPath, type MemoryChunk, type MemoryChunkId } from '@deepseek-ai/dsh-memory'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { MEMORY_DREAM_META_CONSUMED } from '../src/dream.ts'
+import '../src/types.ts'
 import MarkdownMemoryService, {
   MEMORY_SQLITE_SCHEMA_VERSION,
   MEMORY_SQLITE_APPLICATION_ID,
@@ -17,8 +21,8 @@ import {
   workspaceHashOf,
   writeMemoryFile,
 } from '../src/layout.ts'
-import { extractKeywords, filterContentFree, keywordScan, makeSnippet, scoreRow, rowToChunk } from '../src/query.ts'
-import { openMemoryDatabase } from '../src/schema.ts'
+import { extractKeywords, filterContentFree, keywordScan, makeSnippet, scoreRow, rowToChunk, segmentForIndex } from '../src/query.ts'
+import { openMemoryDatabase, readMeta, writeMeta } from '../src/schema.ts'
 
 const temporaryDirectories: string[] = []
 
@@ -32,6 +36,42 @@ async function temporaryPath(name = 'memory'): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-memory-'))
   temporaryDirectories.push(directory)
   return join(directory, name)
+}
+
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await check()) return
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw new Error('condition not satisfied in time')
+}
+
+/** Scripted LLM adapter recording every dream request. */
+class DreamAdapter extends LlmAdapter {
+  requests: GenerateOptions[] = []
+
+  constructor(
+    private readonly text: string,
+    private readonly finish: (StreamChunk & { type: 'finish' })['reason'] = { kind: 'stop' },
+  ) {
+    super()
+  }
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options)
+    if (this.text.length > 0) {
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: this.text }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: this.text } }
+    }
+    yield { type: 'finish', reason: this.finish }
+  }
+}
+
+/** Invoke the private dream pass on the mounted provider. */
+async function runDream(service: unknown, session: Session): Promise<void> {
+  await (service as { _maybeDream(session: Session): Promise<void> })._maybeDream(session)
 }
 
 describe('layout', () => {
@@ -178,6 +218,36 @@ describe('query helpers', () => {
 
   it('keeps underscore inside tokens so identifiers survive', () => {
     expect(extractKeywords('the my_function variable')).toEqual(['my_function', 'variable'])
+  })
+
+  it('segments Han runs for FTS while leaving ASCII text untouched', () => {
+    expect(segmentForIndex('部署约定：永远在 CI 运行')).toBe('部署 约定：永远 在 CI 运行')
+    expect(segmentForIndex('the quick brown fox')).toBe('the quick brown fox')
+    expect(segmentForIndex('my_function 项目记忆')).toBe('my_function 项目 记忆')
+  })
+
+  it('extracts Chinese keywords after segmentation, dropping Chinese stop words', () => {
+    expect(extractKeywords('发布约定')).toEqual(['发布', '约定'])
+    expect(extractKeywords('项目的部署约定是什么')).toEqual(['项目', '部署', '约定'])
+    expect(extractKeywords('请帮我在 CI 运行发布清单')).toEqual(['我在', 'ci', '运行', '发布', '清单'])
+    expect(extractKeywords('的 了 是')).toEqual([])
+  })
+
+  it('matches Chinese terms in the FTS index through the same segmentation', async () => {
+    const db = await openMemoryDatabase(':memory:', 'wal')
+    try {
+      db.exec(`INSERT INTO chunks (id, path, start_line, end_line, text, source, access_count, created_at)
+        VALUES ('a', 'MEMORY.md', 0, 1, '发布约定：永远在 CI 运行发布清单，绝不本地发布。', 'global', 0, 1)`)
+      db.exec(`INSERT INTO chunks_fts (text, id, source)
+        VALUES ('${segmentForIndex('发布约定：永远在 CI 运行发布清单，绝不本地发布。')}', 'a', 'global')`)
+      const scan = keywordScan(db, ['发布', '约定'], undefined, 10)
+      expect(scan.total).toBe(1)
+      expect(scan.rows[0]!.id).toBe('a')
+      expect(scan.rows[0]!.text).toContain('发布约定')
+      expect(keywordScan(db, ['部署'], undefined, 10).total).toBe(0)
+    } finally {
+      db.close()
+    }
   })
 
   it('scans the FTS index, capping results and restricting scope', async () => {
@@ -329,6 +399,23 @@ describe('MarkdownMemoryService', () => {
     }
   })
 
+  it('recalls Chinese-curated knowledge through the segmented FTS path', async () => {
+    const root = await temporaryPath()
+    const ctx = await mount(root)
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      await ctx.memory.write(global, '# 项目记忆\n\n发布约定：永远在 CI 运行发布清单，绝不本地发布。\n')
+      const hits = await ctx.memory.search({ query: '发布约定' })
+      expect(hits.results.length).toBeGreaterThan(0)
+      expect(hits.results[0]!.chunk.text).toContain('发布约定')
+      expect(hits.results[0]!.mode).toBe('fts-only')
+      expect(await ctx.memory.read(hits.results[0]!.chunk.path)).toContain('发布约定')
+      expect(await ctx.memory.search({ query: '不存在的主题词' })).toEqual({ results: [], total: 0 })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('purges index rows for files deleted from disk', async () => {
     const root = await temporaryPath()
     const layout = resolveMemoryLayout('/work/alpha', root, undefined)
@@ -374,6 +461,566 @@ describe('MarkdownMemoryService', () => {
       expect(files.map(file => file.path).sort()).toEqual(
         ['MEMORY.md', 'sessions/2026-08-16-demo-a1b2c3d4.md'].sort(),
       )
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('prunes expired session archives when retentionDays is set', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    const today = new Date().toISOString().slice(0, 10)
+    const oldArchive = join(layout.sessionsDir, '2020-01-01-old-a1b2c3d4.md')
+    const freshArchive = join(layout.sessionsDir, `${today}-fresh-b2c3d4e5.md`)
+    await writeMemoryFile(layout.globalMemoryFile, '# Project memory\n\nEvergreen convention.')
+    await writeMemoryFile(oldArchive, '# Session\n\nAncient convention.')
+    await writeMemoryFile(freshArchive, '# Session\n\nFresh convention.')
+
+    const ctx = new Context()
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      session: { retentionDays: 30 },
+    })
+    try {
+      await expect(readMemoryFile(oldArchive)).rejects.toMatchObject({ code: 'MEMORY_FILE_NOT_FOUND' })
+      expect((await ctx.memory.search({ query: 'Ancient convention' })).results).toEqual([])
+      const fresh = await ctx.memory.search({ query: 'Fresh convention' })
+      expect(fresh.results.length).toBeGreaterThan(0)
+      const files = await ctx.memory.list()
+      expect(files.some(file => file.path.includes('2020-01-01-old'))).toBe(false)
+      await expect(ctx.memory.read(MemoryPath('global', 'MEMORY.md'))).resolves.toContain('Evergreen convention.')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps session archives when retentionDays is omitted', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(join(layout.sessionsDir, '2020-01-01-old-a1b2c3d4.md'), '# Session\n\nAncient convention.')
+    const ctx = await mount(root)
+    try {
+      expect((await ctx.memory.search({ query: 'Ancient convention' })).results.length).toBeGreaterThan(0)
+      await expect(readMemoryFile(join(layout.sessionsDir, '2020-01-01-old-a1b2c3d4.md'))).resolves.toContain('Ancient convention.')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('creates workspace memory from scratch when a dream pass consolidates', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nPin Node LTS.')
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-02-two-b2222222.md'), '# Session\n\nRun releases in CI.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- Pin Node LTS.\n- Run releases in CI.')
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-create'))
+      await runDream(ctx.memory, session)
+      const workspace = await ctx.memory.read(MemoryPath('workspace', 'MEMORY.md'))
+      expect(workspace).toContain('# Workspace memory')
+      expect(workspace).toContain('## Dream consolidation')
+      expect(workspace).toContain('- Pin Node LTS.')
+      expect(adapter.requests).toHaveLength(1)
+      expect(adapter.requests[0]).toMatchObject({
+        provider: 'dream-provider',
+        model: 'dream-model',
+        maxTokens: 1024,
+        purpose: 'dream',
+      })
+      expect(adapter.requests[0]!.system).toBeTruthy()
+      expect(adapter.requests[0]!.messages[0]).toMatchObject({
+        role: 'user',
+        source: { kind: 'plugin', plugin: 'dsh-memory-markdown' },
+      })
+      const dream = session.events.filter(event => event.type === 'memory/dream')
+      expect(dream).toHaveLength(1)
+      const payload = (dream[0] as { data: { archives: string[]; output: string } }).data
+      expect(payload.archives).toEqual(['2026-08-01-one-a1111111.md', '2026-08-02-two-b2222222.md'])
+      expect(payload.output).toBe('- Pin Node LTS.\n- Run releases in CI.')
+      const hits = await ctx.memory.search({ query: 'Pin Node LTS' })
+      expect(hits.results.length).toBeGreaterThan(0)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('appends below existing workspace memory and skips a repeat pass', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(layout.workspaceMemoryFile, '# Workspace memory\n\n- curated fact')
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nNew durable fact.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- New durable fact.')
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-append'))
+      await runDream(ctx.memory, session)
+      const workspace = await ctx.memory.read(MemoryPath('workspace', 'MEMORY.md'))
+      expect(workspace).toContain('- curated fact')
+      expect(workspace).toContain('## Dream consolidation')
+      expect(workspace).toContain('- New durable fact.')
+      await runDream(ctx.memory, session)
+      expect(adapter.requests).toHaveLength(1)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('records an empty pass without appending anything', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nNothing new.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('')
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-empty'))
+      await runDream(ctx.memory, session)
+      await expect(readMemoryFile(layout.workspaceMemoryFile)).rejects.toMatchObject({ code: 'MEMORY_FILE_NOT_FOUND' })
+      const dream = session.events.filter(event => event.type === 'memory/dream')
+      expect(dream).toHaveLength(1)
+      expect((dream[0] as { data: { output: string } }).data.output).toBe('')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('warns and leaves archives un-consumed when the model call fails', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nTry again.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- fact', { kind: 'error', failure: { message: 'boom', code: 'NO_ADAPTER' } })
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-fail'))
+      await runDream(ctx.memory, session)
+      await expect(readMemoryFile(layout.workspaceMemoryFile)).rejects.toMatchObject({ code: 'MEMORY_FILE_NOT_FOUND' })
+      await runDream(ctx.memory, session)
+      expect(adapter.requests).toHaveLength(2)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('warns when workspace memory cannot be read', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await mkdir(layout.workspaceMemoryFile)
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nUnreadable memory.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- fact')
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-unreadable'))
+      await runDream(ctx.memory, session)
+      expect(adapter.requests).toHaveLength(0)
+      expect(session.events.filter(event => event.type === 'memory/dream')).toHaveLength(0)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('honors the minNewArchives and interval gates', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nFirst.')
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-02-two-b2222222.md'), '# Session\n\nSecond.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- consolidated')
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: {
+        enabled: true,
+        provider: 'dream-provider',
+        model: 'dream-model',
+        minNewArchives: 3,
+        intervalHours: 24,
+      },
+    })
+    try {
+      const session = Session.create(SessionId('dream-gates'))
+      await runDream(ctx.memory, session)
+      expect(adapter.requests).toHaveLength(0)
+      await writeMemoryFile(join(layout.sessionsDir, '2026-08-03-three-c3333333.md'), '# Session\n\nThird.')
+      await runDream(ctx.memory, session)
+      expect(adapter.requests).toHaveLength(1)
+      await writeMemoryFile(join(layout.sessionsDir, '2026-08-04-four-d4444444.md'), '# Session\n\nFourth.')
+      await runDream(ctx.memory, session)
+      expect(adapter.requests).toHaveLength(1)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('caps a pass at maxArchivesPerPass, selecting oldest first', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nOldest.')
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-02-two-b2222222.md'), '# Session\n\nMiddle.')
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-03-three-c3333333.md'), '# Session\n\nNewest.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- cap')
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1, maxArchivesPerPass: 2 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-cap'))
+      await runDream(ctx.memory, session)
+      const dream = session.events.filter(event => event.type === 'memory/dream')
+      expect((dream[0] as { data: { archives: string[] } }).data.archives).toEqual([
+        '2026-08-01-one-a1111111.md',
+        '2026-08-02-two-b2222222.md',
+      ])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('falls back to the session routed provider when none is configured', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nRouted.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- routed')
+    ctx.llm.registerAdapter(['routed-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, minNewArchives: 1 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-route'))
+      session.append('request/header', {
+        header: { config: { provider: 'routed-provider', model: 'routed-model' }, system: 'x' },
+        reason: 'initial',
+      })
+      await runDream(ctx.memory, session)
+      expect(adapter.requests[0]).toMatchObject({ provider: 'routed-provider', model: 'routed-model' })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('coalesces concurrent dream passes into one call', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nCoalesce.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- coalesced')
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-coalesce'))
+      const service = ctx.memory as unknown as { _maybeDream(session: Session): Promise<void> }
+      const first = service._maybeDream(session)
+      const second = service._maybeDream(session)
+      expect(second).toBe(first)
+      await first
+      expect(adapter.requests).toHaveLength(1)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('skips the dream pass when disabled, without llm, without a route, or never-open', async () => {
+    const disabledCtx = await mount(await temporaryPath())
+    const disabledAdapter = new DreamAdapter('- x')
+    await disabledCtx.plugin(LlmRuntime)
+    disabledCtx.llm.registerAdapter(['dream-provider'], disabledAdapter)
+    try {
+      await runDream(disabledCtx.memory, Session.create(SessionId('dream-disabled')))
+      expect(disabledAdapter.requests).toHaveLength(0)
+    } finally {
+      await disabledCtx.fiber.dispose()
+    }
+
+    const noLlmCtx = new Context()
+    await noLlmCtx.plugin(MarkdownMemoryService, {
+      root: await temporaryPath(),
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    const warn = vi.spyOn(noLlmCtx.logger, 'warn')
+    try {
+      await runDream(noLlmCtx.memory, Session.create(SessionId('dream-no-llm')))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('llm service is not loaded'))
+    } finally {
+      await noLlmCtx.fiber.dispose()
+    }
+
+    const noRouteCtx = new Context()
+    await noRouteCtx.plugin(LlmRuntime)
+    const noRouteAdapter = new DreamAdapter('- x')
+    noRouteCtx.llm.registerAdapter(['dream-provider'], noRouteAdapter)
+    await noRouteCtx.plugin(MarkdownMemoryService, {
+      root: await temporaryPath(),
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, minNewArchives: 1 },
+    })
+    try {
+      await runDream(noRouteCtx.memory, Session.create(SessionId('dream-no-route')))
+      expect(noRouteAdapter.requests).toHaveLength(0)
+    } finally {
+      await noRouteCtx.fiber.dispose()
+    }
+
+    const neverCtx = new Context()
+    await neverCtx.plugin(LlmRuntime)
+    const neverAdapter = new DreamAdapter('- x')
+    neverCtx.llm.registerAdapter(['dream-provider'], neverAdapter)
+    await neverCtx.plugin(MarkdownMemoryService, {
+      root: await temporaryPath(),
+      workspace: '/work/alpha',
+      openAt: 'never',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    try {
+      await runDream(neverCtx.memory, Session.create(SessionId('dream-never')))
+      expect(neverAdapter.requests).toHaveLength(0)
+    } finally {
+      await neverCtx.fiber.dispose()
+    }
+  })
+
+  it('loads and reconciles the consumed set across passes', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    await ensureMemoryDirectories(layout)
+    const index = join(layout.root, 'index.sqlite')
+    const seeded = await openMemoryDatabase(index, 'wal')
+    try {
+      writeMeta(seeded, MEMORY_DREAM_META_CONSUMED, JSON.stringify(['2026-08-01-one-a1111111.md', 'stale-00000000.md', 42]))
+    } finally {
+      seeded.close()
+    }
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-01-one-a1111111.md'), '# Session\n\nConsumed.')
+    await writeMemoryFile(join(layout.sessionsDir, '2026-08-02-two-b2222222.md'), '# Session\n\nFresh.')
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new DreamAdapter('- fresh')
+    ctx.llm.registerAdapter(['dream-provider'], adapter)
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      dream: { enabled: true, provider: 'dream-provider', model: 'dream-model', minNewArchives: 1 },
+    })
+    try {
+      const session = Session.create(SessionId('dream-reconcile'))
+      await runDream(ctx.memory, session)
+      const dream = session.events.filter(event => event.type === 'memory/dream')
+      expect((dream[0] as { data: { archives: string[] } }).data.archives).toEqual(['2026-08-02-two-b2222222.md'])
+      const observed = await openMemoryDatabase(index, 'wal')
+      try {
+        const saved = JSON.parse(readMeta(observed, MEMORY_DREAM_META_CONSUMED) ?? '[]') as string[]
+        expect(saved).toEqual(['2026-08-01-one-a1111111.md', '2026-08-02-two-b2222222.md'])
+      } finally {
+        observed.close()
+      }
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('refreshes the index when a watched memory file changes externally', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    const ctx = new Context()
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      watcher: { enabled: true, debounceMs: 10, pollIntervalMs: 50 },
+    })
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      await ctx.memory.write(global, '# Project memory\n\nOld convention.')
+      await writeFile(layout.globalMemoryFile, '# Project memory\n\nNew convention.')
+      await waitFor(async () => {
+        const hits = await ctx.memory.search({ query: 'New convention' })
+        return hits.results.length > 0
+      })
+      expect((await ctx.memory.search({ query: 'New convention' })).results[0]!.chunk.text).toContain('New convention')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('purges a watched memory file deleted externally', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    const ctx = new Context()
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      watcher: { enabled: true, debounceMs: 10, pollIntervalMs: 50 },
+    })
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      await ctx.memory.write(global, '# Project memory\n\nVanishing convention.')
+      await waitFor(async () => {
+        const hits = await ctx.memory.search({ query: 'Vanishing convention' })
+        return hits.results.length > 0
+      })
+      await rm(layout.globalMemoryFile)
+      await waitFor(async () => {
+        const hits = await ctx.memory.search({ query: 'Vanishing convention' })
+        return hits.results.length === 0
+      })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('does not refresh on external edits when the watcher is off', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    const ctx = await mount(root)
+    try {
+      const global = MemoryPath('global', 'MEMORY.md')
+      await ctx.memory.write(global, '# Project memory\n\nOld convention.')
+      await writeFile(layout.globalMemoryFile, '# Project memory\n\nNew convention.')
+      await new Promise(resolve => setTimeout(resolve, 120))
+      const hits = await ctx.memory.search({ query: 'New convention' })
+      expect(hits).toEqual({ results: [], total: 0 })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('picks up external edits through the watcher even when the index opens lazily', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    const ctx = new Context()
+    await ctx.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'first-search',
+      watcher: { enabled: true, debounceMs: 10, pollIntervalMs: 30 },
+    })
+    try {
+      await writeMemoryFile(layout.globalMemoryFile, '# Project memory\n\nLazy convention.')
+      await new Promise(resolve => setTimeout(resolve, 80))
+      const hits = await ctx.memory.search({ query: 'Lazy convention' })
+      expect(hits.results.length).toBeGreaterThan(0)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('disposes the watcher with the fiber and remounts cleanly', async () => {
+    const root = await temporaryPath()
+    const first = new Context()
+    await first.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      watcher: { enabled: true, debounceMs: 10, pollIntervalMs: 30 },
+    })
+    await first.fiber.dispose()
+    const second = new Context()
+    await second.plugin(MarkdownMemoryService, {
+      root,
+      workspace: '/work/alpha',
+      openAt: 'startup',
+      watcher: { enabled: true, debounceMs: 10, pollIntervalMs: 30 },
+    })
+    try {
+      await second.memory.write(MemoryPath('global', 'MEMORY.md'), '# Project memory\n\nReloaded.')
+      expect((await second.memory.search({ query: 'Reloaded' })).results.length).toBeGreaterThan(0)
+    } finally {
+      await second.fiber.dispose()
+    }
+  })
+
+  it('loads a file on read when it was not cached at open', async () => {
+    const root = await temporaryPath()
+    const layout = resolveMemoryLayout('/work/alpha', root, undefined)
+    const ctx = await mount(root)
+    try {
+      await writeMemoryFile(layout.workspaceMemoryFile, '# Workspace memory\n\nLate file convention.')
+      await expect(ctx.memory.read(MemoryPath('workspace', 'MEMORY.md'))).resolves.toContain('Late file convention')
     } finally {
       await ctx.fiber.dispose()
     }
@@ -596,6 +1243,7 @@ describe('MarkdownMemoryService', () => {
       root: await temporaryPath(),
       workspace: '/work/alpha',
       openAt: 'never',
+      watcher: { enabled: true },
     })
     try {
       await expect(neverCtx.memory.search({ query: 'x' })).rejects.toMatchObject({
@@ -606,7 +1254,7 @@ describe('MarkdownMemoryService', () => {
     }
   })
 
-  it('rejects blank workspaces and invalid chunk config', async () => {
+  it('rejects blank workspaces and invalid chunk and watcher config', async () => {
     const ctx = new Context()
     await expect(ctx.plugin(MarkdownMemoryService, {
       root: await temporaryPath(),
@@ -618,6 +1266,30 @@ describe('MarkdownMemoryService', () => {
       workspace: '/w',
       index: { maxChunkChars: 0 },
     })).rejects.toThrow(/maxChunkChars/)
+    const badWatcher = new Context()
+    await expect(badWatcher.plugin(MarkdownMemoryService, {
+      root: await temporaryPath(),
+      workspace: '/w',
+      watcher: { enabled: true, debounceMs: 0 },
+    })).rejects.toThrow(/debounceMs/)
+    const badRetention = new Context()
+    await expect(badRetention.plugin(MarkdownMemoryService, {
+      root: await temporaryPath(),
+      workspace: '/w',
+      session: { retentionDays: 0 },
+    })).rejects.toThrow(/retentionDays/)
+    const badDreamInterval = new Context()
+    await expect(badDreamInterval.plugin(MarkdownMemoryService, {
+      root: await temporaryPath(),
+      workspace: '/w',
+      dream: { intervalHours: 0 },
+    })).rejects.toThrow(/intervalHours/)
+    const badDreamPair = new Context()
+    await expect(badDreamPair.plugin(MarkdownMemoryService, {
+      root: await temporaryPath(),
+      workspace: '/w',
+      dream: { enabled: true, provider: 'p' },
+    })).rejects.toThrow(/supplied together/)
   })
 
   it('defends chunk and lifecycle config when direct construction bypasses the schema', () => {
@@ -637,6 +1309,46 @@ describe('MarkdownMemoryService', () => {
       workspace: '/w',
       journalMode: 'invalid' as never,
     })).toThrow(/journalMode is not supported/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      watcher: { enabled: true, debounceMs: 0 },
+    })).toThrow(/watcher\.debounceMs must be a positive safe integer/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      watcher: { enabled: true, pollIntervalMs: 1.5 },
+    })).toThrow(/watcher\.pollIntervalMs must be a positive safe integer/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      session: { retentionDays: 1.5 },
+    })).toThrow(/retentionDays must be a positive safe integer/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      dream: { intervalHours: 0 },
+    })).toThrow(/dream\.intervalHours must be a positive safe integer/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      dream: { minNewArchives: 1.5 },
+    })).toThrow(/dream\.minNewArchives must be a positive safe integer/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      dream: { enabled: true, provider: 'p' },
+    })).toThrow(/dream\.provider and dream\.model must be supplied together/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      dream: { enabled: true, provider: '', model: 'm' },
+    })).toThrow(/dream\.provider and dream\.model must be non-empty strings/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      dream: { enabled: true, provider: 'p', model: '' },
+    })).toThrow(/dream\.provider and dream\.model must be non-empty strings/)
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      watcher: { enabled: true },
+    })).not.toThrow()
+    expect(() => new MarkdownMemoryService(new Context(), {
+      workspace: '/w',
+      session: { retentionDays: 1 },
+    })).not.toThrow()
     const valid = new MarkdownMemoryService(new Context(), { workspace: '/w' })
     expect(valid).toBeInstanceOf(MarkdownMemoryService)
   })

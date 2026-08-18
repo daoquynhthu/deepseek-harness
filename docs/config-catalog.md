@@ -1307,6 +1307,34 @@ export interface Config extends MemoryConfig {
   session?: {
     /** Archive a substantial session to the sessions directory when it ends. Defaults to true. */
     saveOnEnd?: boolean
+    /** Prune session archives whose session date is older than this many days. Off when omitted. */
+    retentionDays?: number
+  }
+  /** File-system watcher for external edits to memory files. Off by default. */
+  watcher?: {
+    /** Watch memory directories and refresh the index on external edits. Defaults to false. */
+    enabled?: boolean
+    /** Milliseconds to coalesce rapid file-system events. Defaults to 100. */
+    debounceMs?: number
+    /** Milliseconds between polling probes when native watching is unavailable. Defaults to 5000. */
+    pollIntervalMs?: number
+  }
+  /** Background LLM consolidation of session archives into workspace memory. Off by default. */
+  dream?: {
+    /** Run the gated consolidation pass after session archives are written. Defaults to false. */
+    enabled?: boolean
+    /** Minimum hours between dream passes. Defaults to 24. */
+    intervalHours?: number
+    /** Minimum un-consolidated session archives before a pass runs. Defaults to 3. */
+    minNewArchives?: number
+    /** Maximum session archives consolidated per pass. Defaults to 10. */
+    maxArchivesPerPass?: number
+    /** Maximum output tokens for a consolidation call. Defaults to 1024. */
+    maxTokens?: number
+    /** Consolidation provider; supply with `model`, otherwise the triggering session's routed provider. */
+    provider?: string
+    /** Consolidation model; supply with `provider`, otherwise the triggering session's routed model. */
+    model?: string
   }
 }
 
@@ -1319,7 +1347,7 @@ export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
 
 Depends on: [`MemoryConfig`](../packages/memory/memory/src/index.ts)
 
-Source: [`packages/memory/memory-markdown/src/index.ts:88`](../packages/memory/memory-markdown/src/index.ts)
+Source: [`packages/memory/memory-markdown/src/index.ts:122`](../packages/memory/memory-markdown/src/index.ts)
 
 <a id="deepseek-aidsh-message-feedback"></a>
 

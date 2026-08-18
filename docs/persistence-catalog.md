@@ -494,6 +494,22 @@ Source: [`packages/llm/llm-retry/src/types.ts:9`](../packages/llm/llm-retry/src/
 
 Source: [`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src/types.ts)
 
+### `memory/*`
+
+<a id="memorydream--log-only"></a>
+
+#### `memory/dream` — log-only
+
+```ts persistence-catalog
+/**
+ * Completed dream consolidation — log-only, no surfaceOp. The durable
+ * output is the block appended to `workspace/MEMORY.md` on disk.
+ */
+'memory/dream': DreamEventPayload
+```
+
+Source: [`packages/memory/memory-markdown/src/types.ts:35`](../packages/memory/memory-markdown/src/types.ts)
+
 ### `permission/*`
 
 <a id="permissionpreset--log-only"></a>

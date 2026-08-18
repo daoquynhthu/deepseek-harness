@@ -159,6 +159,21 @@ export function sessionArchiveName(date: string, slug: string, sid8: string): st
 }
 
 /**
+ * Return `true` when an archive filename's session date is strictly older than
+ * the cutoff day. Names that are not valid archive names never expire, so
+ * retention pruning cannot touch unrelated files.
+ * @param name - archive filename such as `2026-08-16-demo-a1b2c3d4.md`.
+ * @param cutoffMs - UTC epoch in milliseconds; archives dated before it expire.
+ * @returns `true` when the session date falls before the cutoff day.
+ */
+export function archiveIsExpired(name: string, cutoffMs: number): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})-[a-z0-9-]+-[a-z0-9]{8}\.md$/.exec(name)
+  if (match === null) return false
+  const dateMs = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  return dateMs < cutoffMs
+}
+
+/**
  * Render the zero-LLM metadata card for a session archive, mirroring grok's
  * `generate_metadata_summary`.
  * @param stamp - the `YYYY-MM-DD HH:MM UTC` session stamp.

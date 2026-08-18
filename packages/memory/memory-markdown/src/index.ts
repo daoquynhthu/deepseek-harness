@@ -4,17 +4,20 @@
  * Stores curated knowledge as editable markdown under the harness home,
  * indexes chunks with SQLite FTS5, and serves keyword search through the
  * `ctx.memory` service. The shipped path is FTS-only with zero LLM or
- * embedding calls; vector retrieval is a deferred follow-up.
+ * embedding calls; vector retrieval is a deferred follow-up. An optional
+ * file-system watcher refreshes the index when memory files change outside
+ * the provider.
  *
  * @module @deepseek-ai/dsh-memory-markdown
  */
 
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
-import { readdir, stat } from 'node:fs/promises'
+import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
+import { BlockAssembler, createUserMessage, type ContentBlock, type GenerateOptions } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import {
   MemoryError,
@@ -47,12 +50,22 @@ import {
   writeMemoryFile,
   type MemoryLayout,
 } from './layout.ts'
-import { keywordScan, makeSnippet, rowToChunk, scoreRow, extractKeywords, type IndexedChunkRow } from './query.ts'
-import { openMemoryDatabase, type JournalMode } from './schema.ts'
+import { keywordScan, makeSnippet, rowToChunk, scoreRow, extractKeywords, segmentForIndex, type IndexedChunkRow } from './query.ts'
+import { openMemoryDatabase, readMeta, writeMeta, type JournalMode } from './schema.ts'
+import { MemoryWatcher } from './watcher.ts'
+import {
+  MEMORY_DREAM_META_CONSUMED,
+  MEMORY_DREAM_META_LAST_RUN,
+  computeDreamSelection,
+  dreamFinishError,
+  dreamPrompt,
+  renderDreamSection,
+} from './dream.ts'
 import {
   MEMORY_ARCHIVE_MAX_TOPICS,
   MEMORY_ARCHIVE_SLUG_MAX_CHARS,
   archiveDateParts,
+  archiveIsExpired,
   archiveMessageCounts,
   meetsSessionArchiveGate,
   realUserQueryTexts,
@@ -73,13 +86,34 @@ export {
   MEMORY_ROOT_DIR,
   type MemoryLayout,
 } from './layout.ts'
-export { extractKeywords, keywordScan } from './query.ts'
+export { extractKeywords, keywordScan, segmentForIndex } from './query.ts'
 
 /** Default journal mode for the memory index. */
 export const MEMORY_MARKDOWN_DEFAULT_JOURNAL = 'wal'
 
 /** Default for archiving a substantial session to the sessions directory when it ends. */
 export const MEMORY_MARKDOWN_DEFAULT_SAVE_ON_END = true
+
+/** Default debounce window for watcher change events. */
+export const MEMORY_WATCHER_DEFAULT_DEBOUNCE_MS = 100
+
+/** Default polling interval when native watching is unavailable. */
+export const MEMORY_WATCHER_DEFAULT_POLL_INTERVAL_MS = 5000
+
+/** Default for the background dream-consolidation pass. */
+export const MEMORY_MARKDOWN_DEFAULT_DREAM_ENABLED = false
+
+/** Default minimum hours between dream passes. */
+export const MEMORY_MARKDOWN_DEFAULT_DREAM_INTERVAL_HOURS = 24
+
+/** Default minimum un-consolidated session archives before a pass runs. */
+export const MEMORY_MARKDOWN_DEFAULT_DREAM_MIN_NEW_ARCHIVES = 3
+
+/** Default maximum session archives consolidated per pass. */
+export const MEMORY_MARKDOWN_DEFAULT_DREAM_MAX_ARCHIVES_PER_PASS = 10
+
+/** Default maximum output tokens for a consolidation call. */
+export const MEMORY_MARKDOWN_DEFAULT_DREAM_MAX_TOKENS = 1024
 
 /** Open-phase for the SQLite memory index. */
 export type MemoryOpenAt = 'startup' | 'first-search' | 'never'
@@ -109,6 +143,34 @@ export interface Config extends MemoryConfig {
   session?: {
     /** Archive a substantial session to the sessions directory when it ends. Defaults to true. */
     saveOnEnd?: boolean
+    /** Prune session archives whose session date is older than this many days. Off when omitted. */
+    retentionDays?: number
+  }
+  /** File-system watcher for external edits to memory files. Off by default. */
+  watcher?: {
+    /** Watch memory directories and refresh the index on external edits. Defaults to false. */
+    enabled?: boolean
+    /** Milliseconds to coalesce rapid file-system events. Defaults to 100. */
+    debounceMs?: number
+    /** Milliseconds between polling probes when native watching is unavailable. Defaults to 5000. */
+    pollIntervalMs?: number
+  }
+  /** Background LLM consolidation of session archives into workspace memory. Off by default. */
+  dream?: {
+    /** Run the gated consolidation pass after session archives are written. Defaults to false. */
+    enabled?: boolean
+    /** Minimum hours between dream passes. Defaults to 24. */
+    intervalHours?: number
+    /** Minimum un-consolidated session archives before a pass runs. Defaults to 3. */
+    minNewArchives?: number
+    /** Maximum session archives consolidated per pass. Defaults to 10. */
+    maxArchivesPerPass?: number
+    /** Maximum output tokens for a consolidation call. Defaults to 1024. */
+    maxTokens?: number
+    /** Consolidation provider; supply with `model`, otherwise the triggering session's routed provider. */
+    provider?: string
+    /** Consolidation model; supply with `provider`, otherwise the triggering session's routed model. */
+    model?: string
   }
 }
 
@@ -122,6 +184,17 @@ interface ResolvedConfig {
   dshHome: string | undefined
   path: string
   saveOnEnd: boolean
+  retentionDays: number | undefined
+  watcherEnabled: boolean
+  watcherDebounceMs: number
+  watcherPollIntervalMs: number
+  dreamEnabled: boolean
+  dreamIntervalHours: number
+  dreamMinNewArchives: number
+  dreamMaxArchivesPerPass: number
+  dreamMaxTokens: number
+  dreamProvider: string | undefined
+  dreamModel: string | undefined
 }
 
 /** In-memory file cache keyed by absolute path. */
@@ -154,6 +227,21 @@ export class MarkdownMemoryService extends MemoryService {
     path: z.string(),
     session: z.object({
       saveOnEnd: z.boolean(),
+      retentionDays: z.number().step(1).min(1),
+    }),
+    watcher: z.object({
+      enabled: z.boolean(),
+      debounceMs: z.number().step(1).min(1),
+      pollIntervalMs: z.number().step(1).min(1),
+    }),
+    dream: z.object({
+      enabled: z.boolean(),
+      intervalHours: z.number().step(1).min(1),
+      minNewArchives: z.number().step(1).min(1),
+      maxArchivesPerPass: z.number().step(1).min(1),
+      maxTokens: z.number().step(1).min(1),
+      provider: z.string(),
+      model: z.string(),
     }),
   })
 
@@ -163,6 +251,8 @@ export class MarkdownMemoryService extends MemoryService {
   private _db: DatabaseSync | undefined
   private _ready: Promise<void> | undefined
   private _closed = false
+  private _watcher: MemoryWatcher | undefined
+  private _dreamRunning: Promise<void> | undefined
   private readonly _files = new Map<string, FileState>()
 
   constructor(ctx: Context, config: Config) {
@@ -184,6 +274,27 @@ export class MarkdownMemoryService extends MemoryService {
   /** Open eagerly only when activation owns the configured readiness boundary. */
   protected async [Service.init](): Promise<void> {
     if (this._resolved.openAt === 'startup') await this._ensureReady()
+    this._startWatcher()
+  }
+
+  /** Start the file-system watcher unless indexing is disabled. */
+  private _startWatcher(): void {
+    if (!this._resolved.watcherEnabled || this._resolved.openAt === 'never') return
+    const watcher = new MemoryWatcher({
+      dirs: [this._layout.globalDir, this._layout.workspaceDir, this._layout.sessionsDir],
+      debounceMs: this._resolved.watcherDebounceMs,
+      pollIntervalMs: this._resolved.watcherPollIntervalMs,
+      onChange: () => {
+        /* v8 ignore start -- a refresh only rejects when a memory root becomes unwritable, which needs a read-only mount to reproduce */
+        void this._refreshRoots().catch((error: unknown) => {
+          this.ctx.logger.warn(`memory: watcher refresh failed: ${errorMessage(error)}`)
+        })
+        /* v8 ignore stop */
+      },
+    })
+    watcher.start()
+    this._watcher = watcher
+    this.ctx.effect(() => () => this._watcher?.dispose(), 'memoryMarkdown.watcher')
   }
 
   /** Close the database after the provider is disposed. */
@@ -315,10 +426,125 @@ export class MarkdownMemoryService extends MemoryService {
       await writeMemoryFile(absolute, card)
       this._files.set(absolute, { path, absolute, content: card })
       this._reindex(absolute)
+      void this._maybeDream(session)
     } catch (error) {
       /* v8 ignore start -- an unwritable sessions directory cannot be exercised without a read-only mount */
       this.ctx.logger.warn(`memory: session "${session.id}" archive write failed: ${String(error)}`)
       /* v8 ignore stop */
+    }
+  }
+
+  /** Run one dream pass when the gates clear; concurrent triggers coalesce. */
+  private _maybeDream(session: Session): Promise<void> {
+    if (!this._resolved.dreamEnabled) return Promise.resolve()
+    if (this._dreamRunning !== undefined) return this._dreamRunning
+    const running = this._runDreamPass(session).finally(() => {
+      this._dreamRunning = undefined
+    })
+    this._dreamRunning = running
+    return running
+  }
+
+  /** Best-effort consolidation pass; every failure is logged, never thrown. */
+  private async _runDreamPass(session: Session): Promise<void> {
+    try {
+      const db = this._db
+      if (db === undefined) return
+      const llm = this.ctx.get('llm')
+      if (llm === undefined) {
+        this.ctx.logger.warn('memory: dream consolidation skipped because the llm service is not loaded')
+        return
+      }
+      const route = this._resolved.dreamProvider === undefined
+        ? session.requestHeader()?.config
+        : { provider: this._resolved.dreamProvider, model: this._resolved.dreamModel as string }
+      if (route === undefined || route.provider.length === 0 || route.model.length === 0) {
+        this.ctx.logger.warn('memory: dream consolidation skipped because no provider/model route is available')
+        return
+      }
+      const archives = await this._listSessionArchives()
+      const consumed = new Set<string>()
+      for (const name of JSON.parse(readMeta(db, MEMORY_DREAM_META_CONSUMED) ?? '[]') as unknown[]) {
+        if (typeof name === 'string') consumed.add(name)
+      }
+      const names = new Set(archives.map(archive => archive.name))
+      for (const name of [...consumed]) {
+        if (!names.has(name)) consumed.delete(name)
+      }
+      const lastRun = readMeta(db, MEMORY_DREAM_META_LAST_RUN)
+      const lastRunMs = lastRun === undefined ? undefined : Date.parse(lastRun)
+      const { selected, skip } = computeDreamSelection(
+        [...names],
+        consumed,
+        this._resolved.dreamMinNewArchives,
+        this._resolved.dreamMaxArchivesPerPass,
+        this._resolved.dreamIntervalHours,
+        Date.now(),
+        lastRunMs,
+      )
+      if (skip) return
+      const cards: string[] = []
+      for (const archive of archives) {
+        if (!selected.includes(archive.name)) continue
+        try {
+          cards.push(await readMemoryFile(archive.absolute))
+        } catch {
+          /* v8 ignore next -- a listed archive can only fail to load through an I/O race */
+          continue
+        }
+      }
+      let existing: string | undefined
+      try {
+        existing = await readMemoryFile(this._layout.workspaceMemoryFile)
+      } catch (error: unknown) {
+        if ((error as { code?: string }).code !== 'MEMORY_FILE_NOT_FOUND') throw error
+        existing = undefined
+      }
+      const { system, user } = dreamPrompt(existing, cards)
+      const options: GenerateOptions = {
+        provider: route.provider,
+        model: route.model,
+        messages: [createUserMessage({
+          content: [{ type: 'text', text: user }],
+          source: { kind: 'plugin', plugin: 'dsh-memory-markdown' },
+        })],
+        system,
+        maxTokens: this._resolved.dreamMaxTokens,
+        purpose: 'dream',
+        sessionId: session.id,
+      }
+      const assembler = new BlockAssembler()
+      for await (const chunk of llm.stream(options)) assembler.push(chunk)
+      const finishError = dreamFinishError(assembler.finish)
+      if (finishError !== undefined) throw finishError
+      const text = assembler.blocks()
+        .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+        .map(block => block.text)
+        .join('\n')
+        .trim()
+      if (text.length > 0) {
+        const { date } = archiveDateParts(Date.now())
+        const section = renderDreamSection(date, text)
+        const next = existing === undefined
+          ? `# Workspace memory\n\n${section}`
+          : `${existing.trimEnd()}\n\n${section}`
+        const absolute = this._layout.workspaceMemoryFile
+        await writeMemoryFile(absolute, next)
+        this._files.set(absolute, { path: MemoryPath('workspace', 'MEMORY.md'), absolute, content: next })
+        this._reindex(absolute)
+      }
+      for (const name of selected) consumed.add(name)
+      writeMeta(db, MEMORY_DREAM_META_CONSUMED, JSON.stringify([...consumed].sort()))
+      writeMeta(db, MEMORY_DREAM_META_LAST_RUN, new Date().toISOString())
+      session.append('memory/dream', {
+        route: { provider: route.provider, model: route.model },
+        archives: [...selected],
+        system,
+        user,
+        output: text,
+      })
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`memory: dream consolidation failed: ${errorMessage(error)}`)
     }
   }
 
@@ -348,7 +574,7 @@ export class MarkdownMemoryService extends MemoryService {
   private async _open(): Promise<void> {
     await ensureMemoryDirectories(this._layout)
     this._db = await openMemoryDatabase(this._resolved.path, this._resolved.journalMode)
-    await this._indexKnownFiles()
+    await this._refreshRoots()
   }
 
   private _assertSearchEnabled(): void {
@@ -366,31 +592,91 @@ export class MarkdownMemoryService extends MemoryService {
     return this._db
   }
 
-  private async _indexKnownFiles(): Promise<void> {
+  /** Rescan memory roots, reindexing changed files and purging deleted ones. */
+  private async _refreshRoots(): Promise<void> {
+    if (this._db === undefined) return
     await ensureMemoryDirectories(this._layout)
-    for (const absolute of this._files.keys()) this._reindex(absolute)
     const known = new Set<string>()
-    await this._scanDirectory(this._layout.globalDir, 'global', known)
-    await this._scanDirectory(this._layout.workspaceDir, 'workspace', known)
-    await this._scanSessionDirectory(known)
+    const retained = new Set<string>()
+    await this._scanRootFresh(this._layout.globalDir, 'global', known, retained)
+    await this._scanRootFresh(this._layout.workspaceDir, 'workspace', known, retained)
+    await this._scanRootFresh(this._layout.sessionsDir, 'session', known, retained)
+    const retentionDays = this._resolved.retentionDays
+    if (retentionDays !== undefined) {
+      const now = new Date()
+      const cutoffMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - retentionDays * 86_400_000
+      await this._pruneExpiredArchives(known, retained, cutoffMs)
+    }
     this._purgeMissing(known)
+    for (const absolute of this._files.keys()) {
+      if (!retained.has(absolute)) this._files.delete(absolute)
+    }
   }
 
-  private async _scanSessionDirectory(known: Set<string>): Promise<void> {
-    for (const { path, absolute } of await this._listSessionArchives()) {
-      known.add(path)
+  /** Delete session archives whose session date is older than the cutoff day. */
+  private async _pruneExpiredArchives(known: Set<string>, retained: Set<string>, cutoffMs: number): Promise<void> {
+    for (const { path, absolute, name } of await this._listSessionArchives()) {
+      if (!archiveIsExpired(name, cutoffMs)) continue
       try {
-        await this._loadFile(path)
+        await rm(absolute, { force: true })
+      } catch {
+        /* v8 ignore next -- a listed archive can only fail to delete through an I/O race */
+        continue
+      }
+      known.delete(path)
+      retained.delete(absolute)
+      this._files.delete(absolute)
+    }
+  }
+
+  private async _scanRootFresh(
+    directory: string,
+    scope: MemoryScope,
+    known: Set<string>,
+    retained: Set<string>,
+  ): Promise<void> {
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch {
+      /* v8 ignore next -- a refresh-scanned root is ensured to exist before listing */
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue
+      let path: MemoryPathValue
+      try {
+        path = scope === 'session'
+          ? MemoryPath('session', 'sessions', entry.name)
+          : MemoryPath(scope, entry.name)
+      } catch {
+        continue
+      }
+      const absolute = join(directory, entry.name)
+      known.add(path)
+      retained.add(absolute)
+      let content: string
+      try {
+        content = await readMemoryFile(absolute)
       } catch {
         /* v8 ignore next -- a listed file can only fail to load through an I/O race */
         continue
       }
+      const cached = this._files.get(absolute)
+      if (cached !== undefined && cached.content === content) {
+        const db = this._db
+        /* v8 ignore next -- _refreshRoots guards the database before scanning */
+        if (db !== undefined && db.prepare('SELECT 1 FROM chunks WHERE path = ? LIMIT 1').get(path) !== undefined) {
+          continue
+        }
+      }
+      this._files.set(absolute, { path, absolute, content })
       this._reindex(absolute)
     }
   }
 
   /** List the `.md` session-archive files under the sessions directory. */
-  private async _listSessionArchives(): Promise<Array<{ path: MemoryPathValue; absolute: string }>> {
+  private async _listSessionArchives(): Promise<Array<{ path: MemoryPathValue; absolute: string; name: string }>> {
     let entries
     try {
       entries = await readdir(this._layout.sessionsDir, { withFileTypes: true })
@@ -398,7 +684,7 @@ export class MarkdownMemoryService extends MemoryService {
       /* v8 ignore next -- callers create sessionsDir before listing, so readdir cannot fail here */
       return []
     }
-    const archives: Array<{ path: MemoryPathValue; absolute: string }> = []
+    const archives: Array<{ path: MemoryPathValue; absolute: string; name: string }> = []
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue
       let path: MemoryPathValue
@@ -407,47 +693,15 @@ export class MarkdownMemoryService extends MemoryService {
       } catch {
         continue
       }
-      archives.push({ path, absolute: join(this._layout.sessionsDir, entry.name) })
+      archives.push({ path, absolute: join(this._layout.sessionsDir, entry.name), name: entry.name })
     }
     return archives
-  }
-
-  private async _scanDirectory(
-    directory: string,
-    scope: MemoryScope,
-    known: Set<string>,
-  ): Promise<void> {
-    let entries
-    try {
-      entries = await readdir(directory, { withFileTypes: true })
-    } catch {
-      /* v8 ignore next -- _open creates both scan roots before indexing */
-      return
-    }
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.md')) continue
-      let path: MemoryPathValue
-      try {
-        path = MemoryPath(scope, entry.name)
-      } catch {
-        continue
-      }
-      const absolute = join(directory, entry.name)
-      known.add(path)
-      try {
-        await this._loadFile(path)
-      } catch {
-        /* v8 ignore next -- a listed file can only fail to load through an I/O race */
-        continue
-      }
-      this._reindex(absolute)
-    }
   }
 
   /** Drop index rows for files that no longer exist on disk. */
   private _purgeMissing(known: ReadonlySet<string>): void {
     const db = this._db
-    /* v8 ignore next -- purge runs only from _indexKnownFiles after _open has opened the database */
+    /* v8 ignore next -- purge runs only from _refreshRoots after _open has opened the database */
     if (db === undefined) return
     const rows = db.prepare('SELECT DISTINCT path FROM chunks').all() as Array<{ path: string }>
     for (const row of rows) {
@@ -487,7 +741,7 @@ export class MarkdownMemoryService extends MemoryService {
       const text = chunk.text
       const prior = existing.get(id)
       insert.run(id, state.path, chunk.startLine, chunk.endLine, text, scope, prior?.accessCount ?? 0, prior?.createdAt ?? now)
-      insertFts.run(text, id, scope)
+      insertFts.run(segmentForIndex(text), id, scope)
     }
   }
 
@@ -634,6 +888,54 @@ function resolveConfig(config: Config): ResolvedConfig {
   const dshHome = config.dshHome
   const layout = resolveMemoryLayout(config.workspace, root, dshHome)
   const path = config.path ?? join(layout.root, 'index.sqlite')
+  const saveOnEnd = config.session?.saveOnEnd ?? MEMORY_MARKDOWN_DEFAULT_SAVE_ON_END
+  const retentionDays = config.session?.retentionDays
+  if (retentionDays !== undefined && (!Number.isSafeInteger(retentionDays) || retentionDays < 1)) {
+    throw new MemoryError(
+      'memory-markdown: session.retentionDays must be a positive safe integer when set',
+      'MEMORY_INVALID_CONFIG',
+    )
+  }
+  const watcherEnabled = config.watcher?.enabled ?? false
+  const watcherDebounceMs = config.watcher?.debounceMs ?? MEMORY_WATCHER_DEFAULT_DEBOUNCE_MS
+  const watcherPollIntervalMs = config.watcher?.pollIntervalMs ?? MEMORY_WATCHER_DEFAULT_POLL_INTERVAL_MS
+  for (const [name, value] of [
+    ['watcher.debounceMs', watcherDebounceMs],
+    ['watcher.pollIntervalMs', watcherPollIntervalMs],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new MemoryError(`memory-markdown: ${name} must be a positive safe integer`, 'MEMORY_INVALID_CONFIG')
+    }
+  }
+  const dreamEnabled = config.dream?.enabled ?? MEMORY_MARKDOWN_DEFAULT_DREAM_ENABLED
+  const dreamIntervalHours = config.dream?.intervalHours ?? MEMORY_MARKDOWN_DEFAULT_DREAM_INTERVAL_HOURS
+  const dreamMinNewArchives = config.dream?.minNewArchives ?? MEMORY_MARKDOWN_DEFAULT_DREAM_MIN_NEW_ARCHIVES
+  const dreamMaxArchivesPerPass = config.dream?.maxArchivesPerPass ?? MEMORY_MARKDOWN_DEFAULT_DREAM_MAX_ARCHIVES_PER_PASS
+  const dreamMaxTokens = config.dream?.maxTokens ?? MEMORY_MARKDOWN_DEFAULT_DREAM_MAX_TOKENS
+  const dreamProvider = config.dream?.provider
+  const dreamModel = config.dream?.model
+  if ((dreamProvider === undefined) !== (dreamModel === undefined)) {
+    throw new MemoryError(
+      'memory-markdown: dream.provider and dream.model must be supplied together',
+      'MEMORY_INVALID_CONFIG',
+    )
+  }
+  for (const [name, value] of [
+    ['dream.intervalHours', dreamIntervalHours],
+    ['dream.minNewArchives', dreamMinNewArchives],
+    ['dream.maxArchivesPerPass', dreamMaxArchivesPerPass],
+    ['dream.maxTokens', dreamMaxTokens],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new MemoryError(`memory-markdown: ${name} must be a positive safe integer`, 'MEMORY_INVALID_CONFIG')
+    }
+  }
+  if (dreamProvider !== undefined && (dreamProvider.trim().length === 0 || dreamModel === undefined || dreamModel.trim().length === 0)) {
+    throw new MemoryError(
+      'memory-markdown: dream.provider and dream.model must be non-empty strings',
+      'MEMORY_INVALID_CONFIG',
+    )
+  }
   return {
     maxChunkChars,
     chunkOverlapChars,
@@ -643,7 +945,18 @@ function resolveConfig(config: Config): ResolvedConfig {
     workspace: config.workspace,
     dshHome,
     path,
-    saveOnEnd: config.session?.saveOnEnd ?? MEMORY_MARKDOWN_DEFAULT_SAVE_ON_END,
+    saveOnEnd,
+    retentionDays,
+    watcherEnabled,
+    watcherDebounceMs,
+    watcherPollIntervalMs,
+    dreamEnabled,
+    dreamIntervalHours,
+    dreamMinNewArchives,
+    dreamMaxArchivesPerPass,
+    dreamMaxTokens,
+    dreamProvider,
+    dreamModel,
   }
 }
 
